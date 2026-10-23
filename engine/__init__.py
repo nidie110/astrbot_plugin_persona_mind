@@ -12,11 +12,22 @@
 所有模块都不依赖 AstrBot，可单独测试。
 """
 
-from .affect import Affect, normalize01
+from .act import (
+    ACT_HINTS,
+    ACT_NAMES,
+    ACT_TONE,
+    TONE_HINTS,
+    TONE_NAMES,
+    brief as act_brief,
+    decide as act_decide,
+)
+from .affect import Affect, Mood, base_from_field, clamp100, normalize01, num_or
 from .appraisal import (
     EMOTION_LABELS,
     OCC_EFFECTS,
     THINK_PROMPT,
+    normalize_appraisal_number,
+    normalize_user_mood,
     parse_json_block,
     thought_brief,
     thought_to_effects,
@@ -31,15 +42,25 @@ from .intent import (
 )
 from .knowledge import KnowledgeBase, chunk_text, tokens
 from .profiles import ProfileStore, empty, summary_line
-from .prompts import render
-from .voice import VoiceCorpus
+from .prompts import render, feel_line
+from .bridge import AffectionBridge
+from .voice import VoiceCorpus, tier_of
 
 __all__ = [
+    "ACT_HINTS",
+    "ACT_NAMES",
+    "ACT_TONE",
+    "TONE_HINTS",
+    "TONE_NAMES",
+    "act_brief",
+    "act_decide",
     "Affect",
     "normalize01",
     "EMOTION_LABELS",
     "OCC_EFFECTS",
     "THINK_PROMPT",
+    "normalize_appraisal_number",
+    "normalize_user_mood",
     "parse_json_block",
     "thought_brief",
     "thought_to_effects",
@@ -56,5 +77,8 @@ __all__ = [
     "empty",
     "summary_line",
     "render",
+    "feel_line",
     "VoiceCorpus",
+    "tier_of",
+    "AffectionBridge",
 ]

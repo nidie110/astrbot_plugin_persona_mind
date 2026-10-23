@@ -13,6 +13,8 @@ import re
 import time
 from pathlib import Path
 
+from .affect import clamp100, num_or
+
 SUMMARIZE_PROMPT = """你在帮一个聊天机器人整理「她对某个人的了解」。只输出 JSON，不要解释。
 
 这个人最近说的话：
@@ -53,11 +55,18 @@ def empty(uid: str, trust: float = 55.0, intimacy: float = 40.0) -> dict:
 
 
 class ProfileStore:
-    def __init__(self, directory: Path, trust: float = 55.0, intimacy: float = 40.0):
+    def __init__(
+        self,
+        directory: Path,
+        trust: float = 55.0,
+        intimacy: float = 40.0,
+        new_intimacy: float = 20.0,
+    ):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.trust = trust
-        self.intimacy = intimacy
+        self.intimacy = intimacy        # 老档案缺字段时的兜底
+        self.new_intimacy = new_intimacy  # 全新的人：从生疏档开始
 
     def _path(self, uid: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(uid))[:64] or "unknown"
@@ -65,7 +74,8 @@ class ProfileStore:
 
     def load(self, uid: str) -> dict:
         p = self._path(uid)
-        base = empty(uid, self.trust, self.intimacy)
+        # 有档案用老默认值兜底，没有档案的新人从生疏档起步
+        base = empty(uid, self.trust, self.intimacy if p.exists() else self.new_intimacy)
         if p.exists():
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
@@ -127,12 +137,50 @@ class ProfileStore:
         self.save(prof)
         return prof
 
-    def touch(self, uid: str, message: str, intimacy_gain: float = 0.3) -> dict:
+    def touch(
+        self,
+        uid: str,
+        message: str,
+        intimacy_gain: float = 0.3,
+        negative: bool = False,
+        scene: str = "private",
+        cap_per_day: float = 8.0,
+    ) -> dict:
+        """推进关系。
+
+        比起「每说一句就 +0.3」，这里做了三件事：
+        1. 有实质内容才涨（「嗯」「在吗」不该涨亲密度）；
+        2. 每天有上限，防止刷屏把关系刷满；
+        3. 被骂会掉（negative=True），关系不是只进不出的。
+        群聊里别人说话不推进她对某个人的关系，只有私聊或被点名才算。
+        """
         prof = self.load(uid)
         prof["count"] = int(prof.get("count", 0)) + 1
-        prof["I"] = round(min(100.0, float(prof.get("I", self.intimacy)) + intimacy_gain), 1)
-        prof.setdefault("recent", []).append((message or "")[:60])
-        prof["recent"] = prof["recent"][-20:]
+
+        today = time.strftime("%Y-%m-%d")
+        if prof.get("I_date") != today:
+            prof["I_date"] = today
+            prof["I_today"] = 0.0
+
+        text = (message or "").strip()
+        # 档案来自磁盘 JSON，可能被手工改过或写过 NaN/inf；所有数值先收敛再算。
+        gain = max(0.0, num_or(intimacy_gain, 0.0))
+        cap = max(0.0, num_or(cap_per_day, 0.0))
+        if negative:
+            delta = -0.6
+        elif scene == "private" and len(text) >= 4:
+            used = max(0.0, num_or(prof.get("I_today"), 0.0))
+            delta = min(gain, max(0.0, cap - used))
+        else:
+            delta = 0.0
+
+        prev = clamp100(num_or(prof.get("I"), self.intimacy))
+        prof["I"] = round(max(0.0, min(100.0, prev + delta)), 1)
+        if delta > 0:
+            prof["I_today"] = round(min(cap, max(0.0, num_or(prof.get("I_today"), 0.0)) + delta), 2)
+        if scene == "private":
+            prof.setdefault("recent", []).append(text[:60])
+            prof["recent"] = prof["recent"][-20:]
         prof["last_seen"] = int(time.time())
         self.save(prof)
         return prof
