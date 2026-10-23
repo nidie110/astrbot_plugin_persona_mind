@@ -20,6 +20,11 @@ def event(message, uid="alice", group=False):
         is_admin=lambda: True, plain_result=lambda value: value)
 
 
+
+def _inj(req):
+    """取本轮注入到 extra_user_content_parts 的文本。"""
+    return "".join(getattr(p, "text", "") for p in getattr(req, "extra_user_content_parts", []))
+
 class StateIntegrationTests(unittest.TestCase):
     def make(self, directory, **config):
         m = object.__new__(plugin.MindEngine)
@@ -99,7 +104,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         m, logs = fixture.HookTests().make_mind(50)
         e = event("嗯")
         m.last_decision[e.unified_msg_origin] = {"uid": "alice", "act": "answer"}
-        req = types.SimpleNamespace(system_prompt="BASE", contexts=[
+        req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[], contexts=[
             {"role": "user", "content": "今天一般"},
             {"role": "assistant", "content": "需要我陪你聊聊吗？"}])
         await m.before_llm(e, req)
@@ -110,7 +115,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         m, _ = fixture.HookTests().make_mind(50)
         e = event("嗯", uid="bob", group=True)
         m.last_decision[e.unified_msg_origin] = {"uid": "alice", "act": "care"}
-        req = types.SimpleNamespace(system_prompt="BASE", contexts=[
+        req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[], contexts=[
             {"role": "assistant", "content": "需要我陪你聊聊吗？"}])
         await m.before_llm(e, req)
         self.assertFalse(m.last_decision[e.unified_msg_origin]["previous_asked"])
@@ -119,7 +124,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         m, _ = fixture.HookTests().make_mind(50)
         e = event("嗯")
         m.last_decision[e.unified_msg_origin] = {"uid": "alice", "act": "care", "budget": 4}
-        req = types.SimpleNamespace(system_prompt="BASE", contexts=[
+        req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[], contexts=[
             {"role": "assistant", "content": [{"type": "text", "text": "累了就歇会。"}]}])
         await m.before_llm(e, req)
         self.assertFalse(m.last_decision[e.unified_msg_origin]["previous_asked"])
@@ -133,7 +138,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
             m.bridge._ts = time.time()
             m.bridge._cache = {"synthetic_bot": {"alice": {
                 "affection": 50, "current_libido_other": value, "current_aggression_other": value}}}
-            await m.before_llm(event("你个笨蛋"), types.SimpleNamespace(system_prompt="BASE"))
+            await m.before_llm(event("你个笨蛋"), types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[]))
             rows.append((dict(m.mood.core.base), logs[-1]["tone"]))
         self.assertNotEqual(rows[0][0], rows[1][0])
         self.assertEqual([r[1] for r in rows], ["playful", "sharp"])
@@ -142,14 +147,14 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         for text, mode, budget in [("今天很难受", "chat", 1), ("帮我写一个脚本", "task", 3)]:
             m, logs = fixture.HookTests().make_mind(50)
             m.cfg["max_lines_private"] = 1
-            req = types.SimpleNamespace(system_prompt="BASE")
+            req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
             await m.before_llm(event(text), req)
             self.assertEqual(logs[-1]["length_mode"], mode)
             self.assertEqual(logs[-1]["budget"], budget)
             if mode == "task":
-                self.assertIn("字数与条数限制不适用", req.system_prompt)
+                self.assertIn("字数与条数限制不适用", _inj(req))
             else:
-                self.assertIn("这一轮说：1 条左右", req.system_prompt)
+                self.assertIn("这一轮说：1 条左右", _inj(req))
 
     async def test_failure_has_traceback_rate_limit_and_recovers(self):
         m, _ = fixture.HookTests().make_mind(50)
@@ -158,7 +163,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         m._inject = fail
         with patch.object(plugin.logger, "error") as errors, patch.object(plugin.time, "time", return_value=10000):
             for _ in range(3):
-                req = types.SimpleNamespace(system_prompt="BASE")
+                req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
                 await m.before_llm(event("你好"), req)
                 self.assertEqual(req.system_prompt, "BASE")
             self.assertEqual(errors.call_count, 1)
@@ -168,7 +173,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("连续失败3次", m._health_line())
             async def succeed(*args): pass
             m._inject = succeed
-            await m.before_llm(event("你好"), types.SimpleNamespace(system_prompt="BASE"))
+            await m.before_llm(event("你好"), types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[]))
             self.assertEqual(m._health["inject"]["consecutive"], 0)
             self.assertEqual(m._health["inject"]["last_success"], 10000)
 
@@ -211,7 +216,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(plugin.logger, "error"):
             for fail in (False, True):
                 m.context.fail = fail
-                await m.before_llm(event("你好"), types.SimpleNamespace(system_prompt="BASE"))
+                await m.before_llm(event("你好"), types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[]))
         self.assertEqual(logs[0]["cost"]["total_tokens"], 123)
         self.assertNotIn("total_tokens", logs[1]["cost"])
         self.assertFalse(logs[1]["cost"]["ok"])
