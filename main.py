@@ -774,8 +774,8 @@ class MindEngine(Star):
             except Exception:
                 pass
             target.append(inject_part)
-        else:  # 老版本 AstrBot 没有这个字段时退回 system_prompt
-            req.system_prompt = (req.system_prompt or "") + block
+        else:  # 极老版本 AstrBot 没有这个字段时跳过注入，绝不碰 system_prompt
+            logger.warning("[mind] 当前 AstrBot 不支持 extra_user_content_parts，本轮跳过注入")
 
         # 关系推进 + 侧写样本（关掉 profile_enable 就只读不写，不再偷偷采集）
         if self.cfg.get("profile_enable", True):
