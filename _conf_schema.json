@@ -1,0 +1,117 @@
+{
+  "enable": {
+    "type": "bool",
+    "description": "启用内心引擎",
+    "default": true
+  },
+  "think_provider": {
+    "type": "string",
+    "description": "「内心活动」用哪个模型（留空=用当前会话的默认模型；建议用便宜快的小模型）",
+    "default": ""
+  },
+  "think_timeout": {
+    "type": "int",
+    "description": "单次思考超时（秒）。超时会跳过注入，不影响正常回复",
+    "default": 15
+  },
+  "group_light": {
+    "type": "bool",
+    "description": "群聊轻量模式：不注入人物侧写，语料只取一句，避免过度解读",
+    "default": true
+  },
+  "max_inject_chars": {
+    "type": "int",
+    "description": "注入内容的字数上限（防止 prompt 过长）",
+    "default": 1200
+  },
+  "log_enable": {
+    "type": "bool",
+    "description": "记录每轮的推断与意图到 mind.log（调试用）",
+    "default": true
+  },
+  "profile_enable": {
+    "type": "bool",
+    "description": "启用人物侧写：慢慢认识每个对话者",
+    "default": true
+  },
+  "summarize_every": {
+    "type": "int",
+    "description": "每多少轮归纳一次侧写（0=关闭自动归纳）",
+    "default": 20
+  },
+  "kb_enable": {
+    "type": "bool",
+    "description": "启用本地知识库检索（零依赖，无需 embedding）",
+    "default": true
+  },
+  "voice_enable": {
+    "type": "bool",
+    "description": "启用语料库：按当前意图抽「她平时怎么说」的句子",
+    "default": true
+  },
+  "extra_kb_files": {
+    "type": "list",
+    "description": "额外知识文件（绝对路径）。可以是日记、笔记、外部资料，改完自动重载",
+    "default": []
+  },
+  "decay_minutes": {
+    "type": "float",
+    "description": "情绪衰减步长（分钟）：每隔这么久向基线回归一次",
+    "default": 5.0
+  },
+  "decay_ratio": {
+    "type": "float",
+    "description": "每次回归的比例（0.2 = 回归 20%）",
+    "default": 0.2
+  },
+  "persona_o": {
+    "type": "int",
+    "description": "人格·开放性 O（0-100）：越高越好奇、爱玩梗",
+    "default": 75
+  },
+  "persona_c": {
+    "type": "int",
+    "description": "人格·尽责性 C（0-100）：越低越随性、会摸鱼",
+    "default": 35
+  },
+  "persona_e": {
+    "type": "int",
+    "description": "人格·外向性 E（0-100）：越高话越多",
+    "default": 55
+  },
+  "persona_a": {
+    "type": "int",
+    "description": "人格·宜人性 A（0-100）：偏低=嘴硬、爱怼；偏高=温和",
+    "default": 40
+  },
+  "persona_n": {
+    "type": "int",
+    "description": "人格·神经质 N（0-100）：越高情绪波动越大",
+    "default": 60
+  },
+  "affect_p": {
+    "type": "int",
+    "description": "情绪基线·愉悦 P（0-100）",
+    "default": 60
+  },
+  "affect_ar": {
+    "type": "int",
+    "description": "情绪基线·唤醒 Ar（0-100）：越低越犯困、越容易敷衍",
+    "default": 45
+  },
+  "affect_d": {
+    "type": "int",
+    "description": "情绪基线·支配 D（0-100）：越高越有底气",
+    "default": 50
+  },
+  "rel_t": {
+    "type": "int",
+    "description": "新对话者的初始信任 T（0-100）",
+    "default": 55
+  },
+  "rel_i": {
+    "type": "int",
+    "description": "新对话者的初始亲密 I（0-100）",
+    "default": 40
+  }
+}
