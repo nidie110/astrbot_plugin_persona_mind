@@ -1,7 +1,7 @@
 name: astrbot_plugin_persona_mind
 display_name: 人格认知引擎
-desc: 人格认知引擎：八动作 × 七口吻、core/scene 双层 PAD、情景推断、关系势场与本地知识/语料。1.1.1。
-version: 1.1.1
+desc: 人格认知引擎：八动作 × 七口吻、core/scene 双层 PAD、情景推断、关系势场与本地知识/语料。1.1.2。
+version: 1.1.2
 author: nidie110
 repo: https://github.com/nidie110/astrbot_plugin_persona_mind
 astrbot_version: ">=4.11.0"
