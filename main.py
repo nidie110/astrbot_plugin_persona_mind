@@ -21,6 +21,11 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
+try:  # AstrBot >= 4.11 才有；老版本退回 system_prompt 注入
+    from astrbot.core.agent.message import TextPart
+except Exception:  # pragma: no cover
+    TextPart = None  # type: ignore[assignment]
+
 from .engine import (
     Affect,
     Mood,
@@ -756,7 +761,21 @@ class MindEngine(Star):
             line_chars=int(self.cfg.get("chars_per_line", 15) or 15),
             decision=decision,
         )
-        req.system_prompt = (req.system_prompt or "") + block
+        # 注入方式：不动 system_prompt（会破坏整个会话的前缀缓存，市场审核会拒），
+        # 改为往「最后一条用户消息」追加临时内容块——AstrBot 官方推荐路径。
+        # 每轮请求的 extra_user_content_parts 都是新列表，不会跨轮累积；
+        # 同一轮内若钩子被触发多次，用对象引用去重，绝不按文本切割。
+        inject_part = TextPart(text=block) if TextPart is not None else None
+        target = getattr(req, "extra_user_content_parts", None)
+        if inject_part is not None and isinstance(target, list):
+            target[:] = [p for p in target if getattr(p, "_mind_injected", False) is not True]
+            try:
+                object.__setattr__(inject_part, "_mind_injected", True)
+            except Exception:
+                pass
+            target.append(inject_part)
+        else:  # 老版本 AstrBot 没有这个字段时退回 system_prompt
+            req.system_prompt = (req.system_prompt or "") + block
 
         # 关系推进 + 侧写样本（关掉 profile_enable 就只读不写，不再偷偷采集）
         if self.cfg.get("profile_enable", True):
