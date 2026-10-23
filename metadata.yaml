@@ -1,6 +1,6 @@
 name: astrbot_plugin_persona_mind
 display_name: 人格认知引擎
-desc: 先想再说：给她一套可观测的内心（人格/情绪/推断/意图），让她开口前先有自己的立场。大五人格 + OCC 情绪评价 + PAD 衰减 + ToM 情景推断 + 五意图计算 + 人物侧写 + 本地知识库/语料库，让她开口前先有自己的立场和情绪。
+desc: 先想再说：大五人格 + OCC 情绪评价 + PAD 衰减 + ToM 情景推断 + 五意图计算 + 人物侧写 + 本地知识库/语料库。让她开口前先有自己的立场和情绪。
 version: 1.0.0
 author: nidie110
 repo: https://github.com/nidie110/astrbot_plugin_persona_mind
