@@ -28,6 +28,7 @@
 13. [隐私与安全](#十三隐私与安全)
 14. [已知限制](#十四已知限制)
 15. [开发与扩展](#十五开发与扩展)
+16. [发布与版本管理](#十六发布与版本管理)
 
 ---
 
@@ -638,11 +639,99 @@ python -m unittest discover -s tests -v
 
 ---
 
-## 十六、License
+## 十六、发布与版本管理
+
+这一节记录本插件**实际是怎么发上去的**，也当作一个可复用的发布流程。
+
+### 16.1 两个地方，别搞混
+
+| 位置 | 作用 |
+|---|---|
+| GitHub 仓库 | 代码与 `metadata.yaml`，是唯一事实来源 |
+| AstrBot Cloud（`cloud.astrbot.app`） | 插件市场，读取仓库元数据、生成市场页、跑安全检查 |
+
+> 旧文档里的 `AstrBotDevs/AstrBot_Plugins_Collection` 仓库已经标了 **DEPRECATED**，不要再往那里提 PR。
+
+### 16.2 首次发布（已完成的步骤）
+
+1. 代码推到 GitHub 公开仓库
+2. 打开 <https://cloud.astrbot.app/> → 用 GitHub 登录（首次会要求设一个用户名）
+3. 点右上「+ 发布」→ 授权安装 **AstrBot Cloud GitHub App**
+4. 选账号 → 选仓库 → 点「解析」
+5. 确认解析结果（插件名、版本、作者、仓库地址、标签）
+6. 点「提交审核」
+
+提交后会生成市场页，状态是 `Waiting`（等待安全检查）。
+
+### 16.3 发新版本
+
+```bash
+# 1. 改版本号（唯一决定市场的字段）
+#    metadata.yaml: version: 1.0.1
+# 2. 写更新日志（市场页「更新日志」标签会读到 CHANGELOG.md）
+# 3. 提交
+git commit -am "chore: bump version to 1.0.1"
+git push
+```
+
+然后去市场页点「发布新版本」，重新解析 + 提交审核即可。
+
+**注意**：版本号不变的话，市场不会认为有新版本。
+
+### 16.4 合规检查清单
+
+市场按 [插件市场 JSON 规范（2026-06-27）](https://docs.astrbot.app/dev/plugin-market/2026-06-27.html) 校验，提交前自查：
+
+- [ ] `metadata.yaml` 在仓库根目录
+- [ ] `name` 以 `astrbot_plugin_` 开头，且与目录名一致
+- [ ] `author` / `name` / `version` 三者与市场记录一致（市场按 `author/name` 生成 `plugin_id`）
+- [ ] `repo` 是 `https://github.com/{owner}/{repo}` 形式，**不能**是 release、子树、SSH 或非 GitHub 地址
+- [ ] 压缩包 ≤ **16MB**
+- [ ] `desc` 简短准确，别塞满关键词
+- [ ] 有 README（市场页「文档」标签会渲染它）
+
+### 16.5 常见卡点
+
+| 现象 | 原因 |
+|---|---|
+| 解析按钮一直灰着 | 仓库里没有 `metadata.yaml`，或 YAML 语法错 |
+| 解析出来了但字段为空 | `metadata.yaml` 缺 `display_name` / `desc` |
+| 提交后一直 Waiting | 自动安全检查排队，通常几分钟到几小时 |
+| 发布版本后市场没更新 | `version` 没改，或没点「发布新版本」 |
+| 安装后提示身份不匹配 | 市场记录的 `author/name` 与包内 `metadata.yaml` 不一致 |
+
+### 16.6 GitHub App 权限
+
+授权 AstrBot Cloud 时它申请的是**只读**权限：
+
+- code（读代码）
+- metadata（读仓库信息）
+- email（读账号邮箱，用于识别身份）
+
+如果当时选了「All repositories」，可以随时收窄：
+
+```
+https://github.com/settings/installations → AstrBot Cloud → Configure
+```
+
+改成 Only select repositories，只授权插件仓库即可。
+
+### 16.7 本地发布产物
+
+```bash
+# 用 git archive 打包（不含 .git，产物干净）
+git archive --format=zip --output=astrbot_plugin_persona_mind_v1.0.0.zip HEAD
+```
+
+也可以直接让市场从仓库解析，不必上传 zip。
+
+---
+
+## 十七、License
 
 MIT。改的时候留一句出处就行。
 
-## 十七、致谢
+## 十八、致谢
 
 设计参考了情感计算与虚拟角色领域的公开研究（见第十节），
 实现上刻意做了减法——只保留"评价 → 情绪 → 表达"主干，让每一层都能单独观测。
