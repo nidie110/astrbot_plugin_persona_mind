@@ -4,6 +4,12 @@
     "description": "启用内心引擎",
     "default": true
   },
+  "affection_bridge": {
+    "type": "bool",
+    "description": "桥接隔壁「情绪管理」插件（astrbot_plugin_affection）的数值",
+    "default": true,
+    "hint": "读她的情绪文件，读不到就静默降级，不影响主流程。"
+  },
   "field_enable": {
     "type": "bool",
     "description": "势场基线（关系决定情绪回落位置）",
@@ -141,5 +147,131 @@
     "description": "每条字数上限",
     "hint": "注入块里「每条不超过 N 字」的那个 N。人格正本可覆盖。",
     "default": 15
+  },
+  "diary_enable": {
+    "type": "bool",
+    "description": "写日记：把她当天的经历补写成日记，存进知识库并参与检索",
+    "default": true
+  },
+  "_sec_diary": {
+    "type": "text",
+    "description": "定时写日记",
+    "hint": "到点自动写当天日记并写进知识库；留空时间则只在有素材时补写。",
+    "invisible": true
+  },
+  "diary_at": {
+    "type": "string",
+    "description": "每天写日记的时间（HH:MM，如 22:40；留空=不定时，只在有旧素材时补写）",
+    "default": "22:40",
+    "hint": "到点且当天有素材（看过视频/聊过天）才写；没素材就跳过，不写空日记。"
+  },
+  "diary_record_chat": {
+    "type": "bool",
+    "description": "把日常对话也记成日记素材（这样没看视频的日子也有内容可写）",
+    "default": true
+  },
+  "diary_chat_gap": {
+    "type": "int",
+    "description": "同一会话两条聊天素材的最小间隔（秒），防止刷屏",
+    "default": 900
+  },
+  "diary_lookback": {
+    "type": "int",
+    "description": "补写范围：往前查几天没写的素材",
+    "default": 3
+  },
+  "diary_keep_days": {
+    "type": "int",
+    "description": "日记素材保留天数（日记本身永久保留）",
+    "default": 30
+  },
+  "diary_timeout": {
+    "type": "int",
+    "description": "写日记的模型超时（秒）",
+    "default": 60
+  },
+  "diary_mood_recall": {
+    "type": "bool",
+    "description": "情绪联想：心情很低时想起以前开心的日记，心情好时想起难过的",
+    "default": true
+  },
+  "diary_material_path": {
+    "type": "string",
+    "description": "素材目录（留空=插件数据目录下的 diary_materials）",
+    "default": ""
+  },
+  "claims_enable": {
+    "type": "bool",
+    "default": true,
+    "description": "共享判断：跨界面共用她对某件事的看法（不共用经历与情绪）",
+    "hint": "关掉后她不会提及另一边形成的判断"
+  },
+  "claims_recent": {
+    "type": "bool",
+    "default": false,
+    "description": "没有话题命中时，带上最近三天形成过的判断",
+    "hint": "默认关闭，避免无关判断随机插入；只建议在主动回顾模式下开启"
+  },
+  "evolution_mode": {
+    "type": "string",
+    "default": "rule",
+    "description": "自我模型演化档位：off=不采集；rule=关键词当场结算（默认）；daily=当天先排队，每天用一次 LLM 归纳成 0-3 条信念（一律待复核）；deep=同 daily，但归纳时更倾向找跨天模式（成本更高）",
+    "hint": "off=完全关闭（行为同 1.1.2）；rule=复用已有判读、不新增模型调用（推荐，当前唯一完整实现）；daily/deep=预留档位，行为暂同 rule，将在 1.2.1 实现",
+    "options": [
+      "off",
+      "rule",
+      "daily",
+      "deep"
+    ]
+  },
+  "evolution_max_candidates_per_day": {
+    "type": "int",
+    "default": 3,
+    "description": "每天最多提取多少个候选"
+  },
+  "evolution_max_new_beliefs_per_day": {
+    "type": "int",
+    "default": 1,
+    "description": "每天最多形成多少条新信念"
+  },
+  "evolution_relevance_percentile": {
+    "type": "int",
+    "default": 75,
+    "description": "候选筛选的相对阈值（当天 relevance 分位）",
+    "hint": "她几乎每条消息 relevance 都在 0.6-0.9，绝对阈值等于全收；用分位能自适应"
+  },
+  "evolution_confirm_window_days": {
+    "type": "int",
+    "default": 7,
+    "description": "重复证据的确认窗口（天）"
+  },
+  "evolution_confirm_count": {
+    "type": "int",
+    "default": 3,
+    "description": "形成一条长期信念需要的重复确认次数"
+  },
+  "evolution_max_history_days": {
+    "type": "int",
+    "default": 90,
+    "description": "信念保留天数"
+  },
+  "evolution_snapshot_keep_days": {
+    "type": "int",
+    "default": 30,
+    "description": "快照保留天数"
+  },
+  "evolution_daily_interval_hours": {
+    "type": "int",
+    "description": "daily 档两次归纳的最小间隔（小时）",
+    "default": 6,
+    "min": 1,
+    "max": 48
+  },
+  "evolution_daily_timeout": {
+    "type": "int",
+    "description": "daily 归纳的 LLM 超时（秒）",
+    "default": 30,
+    "min": 5,
+    "max": 300
   }
 }

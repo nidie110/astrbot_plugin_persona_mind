@@ -1,6 +1,16 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .idea/
 .vscode/
+.venv/
+venv/
 data/
+logs/
 *.log
+.pytest_cache/
+.DS_Store
+
+# 评审/校准临时产物（发布打包时可剔除）
+REVIEW_*.md
+work_calib.txt
+work_holdout.txt

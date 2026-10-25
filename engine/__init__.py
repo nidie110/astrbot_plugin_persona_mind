@@ -40,7 +40,10 @@ from .intent import (
     scores,
     top_two,
 )
-from .knowledge import KnowledgeBase, chunk_text, tokens
+from .claims import ClaimStore
+from .diary import Diary
+from .self_model import SelfModel
+from .knowledge import KnowledgeBase, chunk_text, parse_front_matter, tokens
 from .profiles import ProfileStore, empty, summary_line
 from .prompts import render, feel_line
 from .bridge import AffectionBridge
@@ -70,8 +73,12 @@ __all__ = [
     "line_budget",
     "scores",
     "top_two",
+    "ClaimStore",
+    "Diary",
+    "SelfModel",
     "KnowledgeBase",
     "chunk_text",
+    "parse_front_matter",
     "tokens",
     "ProfileStore",
     "empty",

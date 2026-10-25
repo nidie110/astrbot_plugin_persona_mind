@@ -1,6 +1,6 @@
 # 人格认知引擎 · persona_mind
 
-**1.1.1 本地修正版，尚未发布。** 适用版本声明见 `metadata.yaml`：AstrBot ≥ 4.11.0。
+**1.1.2 共享判断修正版，尚未发布。** 适用版本声明见 `metadata.yaml`：AstrBot ≥ 4.11.0。
 
 插件在主模型生成回复前调用一次模型，推断消息情境和情绪，再将情绪状态、行为、口吻、知识和语料拼入 `system_prompt`。它不主动发送消息，也不直接改写主模型的回复。引擎使用 Python 标准库；运行插件仍需 AstrBot 和可用的模型供应商。
 
@@ -212,3 +212,51 @@ python -B tools/evaluate.py
 本地修改记录见 `CHANGELOG.md`。仓库地址和作者沿用 `metadata.yaml`，本修正版没有执行远程发布。
 
 本次交付结论见 `REVIEW_AND_FIX_20261023.md`，实际测试及评估输出在 `validation/`。包内保留的 `REVIEW_RESPONSE_20261023.md`、`work_calib.txt`、`work_holdout.txt` 属于送审材料，不代表 1.1.1 的最终验证结果。
+
+
+## 共享判断（1.1.2）
+
+小鲸鱼和 QQ 侧的蓝色大肥鱼按同一 canonical identity 管理，但保留各自的场景经历。日记里的判断可以进入共享 claims，日记正文和现场经历不会自动变成 QQ 的亲身经历；QQ 侧引用外部判断时会使用“听小鲸鱼说过”的来源措辞。
+
+每条 claim 记录 `canonical_id`、`source_scene`、`material_id`、`visibility` 和 `experience`。`visibility=private` 永远不会进入检索或 recent 注入；历史记录缺少该字段时按 shared 兼容，未知显式值按 private 处理。`material_id` 对同一素材保持稳定，更新 stance 会追加一条 JSONL 并在内存和重启加载时保留最新判断。
+
+日记模型最多输出两条判断，由 `main.py` 写入 QQ/日记共用的 claims 库。外部小鲸鱼日记仍需手动运行 `tools/import_whale_diary.py` 导入；导入器会优先使用 BV 号作为素材 ID。`claims_recent` 默认关闭，只有显式开启才会在无话题命中时注入最近判断，以免随机打断无关对话。
+
+## 日记（1.2.0）
+
+她每天给自己写一篇日记，写完就是知识库里的一等公民——下次聊到相关话题会被想起来。
+
+**素材怎么来**
+
+- `astrbot_plugin_feiyu_video` 看完视频后写一条（标题、讲了什么、当时的反应）；
+- 本插件自己把日常对话按会话节流记一条（`diary_record_chat`，默认开；同一会话两次至少隔 `diary_chat_gap` 秒，默认 900）；
+- 素材落在 `data/plugin_data/astrbot_plugin_persona_mind/diary_materials/YYYY-MM-DD.jsonl`，单日最多取 40 条、单条截断 400 字进 prompt。
+
+**什么时候写**
+
+1. 每天到 `diary_at`（默认 `22:40`，留空=不定时）写当天；当天没有任何素材就跳过，不写空日记；
+2. 启动时补一次：前几天有素材但漏写的日子会立刻补上（`diary_lookback`，默认 3 天，一次最多两篇）；
+3. 每天第一次开口时再兜一次底，防止进程一直不重启却漏了几天；
+4. 手动：`/mind diary`、`/mind diary 昨天`、`/mind diary 2026-10-24`。
+
+**写完之后**
+
+- 落到 `kb/diary/YYYY-MM-DD.md`，带 front matter（`date` / `title` / `tags` / `mood` / `source`），写完立刻重载知识库；
+- 检索走 `query_diary`（只在日记里找，命中带日期）和 `mood_diary`（很低落时翻出以前开心的那天）；日记条目在打分时乘 `DIARY_PREFER=1.15`；
+- 日记里形成的判断（0~2 条）写进共享 claims，正文本身不进 QQ 的“亲身经历”。
+
+**配置**
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `diary_enable` | true | 总开关；关掉后既不写也不检索 |
+| `diary_at` | `22:40` | 每天写日记的时间（HH:MM）；留空则只在有旧素材时补写 |
+| `diary_record_chat` | true | 把日常对话记成素材 |
+| `diary_chat_gap` | 900 | 同一会话两条聊天素材的最小间隔（秒） |
+| `diary_lookback` | 3 | 往上找几天的漏写 |
+| `diary_keep_days` | 30 | 素材保留天数（日记本身永久保留） |
+| `diary_timeout` | 60 | 写日记的 LLM 超时（秒） |
+| `diary_mood_recall` | true | 心情很低/很好时联想旧日记 |
+| `diary_material_path` | 空 | 自定义素材目录 |
+
+素材与日记都在本地插件数据目录，不上传任何外部服务。

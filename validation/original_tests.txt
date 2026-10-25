@@ -1,0 +1,34 @@
+test_bridge_values_move_the_baseline (test_field.FieldHookTests.test_bridge_values_move_the_baseline) ... ok
+test_base_follows_relation (test_field.FieldTests.test_base_follows_relation) ... ok
+test_rebase_keeps_offset (test_field.FieldTests.test_rebase_keeps_offset) ... ok
+test_strength_zero_is_neutral (test_field.FieldTests.test_strength_zero_is_neutral) ... ok
+test_chat_keeps_short_style (test_v2_regressions.DecisionTests.test_chat_keeps_short_style) ... ok
+test_distress_excludes_teasing_even_with_direct_insult (test_v2_regressions.DecisionTests.test_distress_excludes_teasing_even_with_direct_insult) ... ok
+test_genuine_play_still_allowed (test_v2_regressions.DecisionTests.test_genuine_play_still_allowed) ... ok
+test_good_news_is_warm_without_unsolicited_teasing (test_v2_regressions.DecisionTests.test_good_news_is_warm_without_unsolicited_teasing) ... ok
+test_mixed_request_keeps_task_and_care (test_v2_regressions.DecisionTests.test_mixed_request_keeps_task_and_care) ... ok
+test_mood_validation (test_v2_regressions.DecisionTests.test_mood_validation) ... ok
+test_quoted_reported_and_negated_insults_not_direct (test_v2_regressions.DecisionTests.test_quoted_reported_and_negated_insults_not_direct) ... ok
+test_scores_are_finite_normalized_and_masked (test_v2_regressions.DecisionTests.test_scores_are_finite_normalized_and_masked) ... ok
+test_self_negation_and_negated_self_judgment (test_v2_regressions.DecisionTests.test_self_negation_and_negated_self_judgment) ... ok
+test_sharp_requires_explicit_other_aggression (test_v2_regressions.DecisionTests.test_sharp_requires_explicit_other_aggression) ... ok
+test_task_length_exemption_survives_long_material (test_v2_regressions.DecisionTests.test_task_length_exemption_survives_long_material) ... ok
+test_dodge_break_is_independent_between_group_sessions (test_v2_regressions.HookTests.test_dodge_break_is_independent_between_group_sessions) ... ok
+test_invalid_mood_keeps_injection (test_v2_regressions.HookTests.test_invalid_mood_keeps_injection) ... ok
+test_mixed_task_flows_through_real_hook (test_v2_regressions.HookTests.test_mixed_task_flows_through_real_hook) ... ok
+test_mixed_unknown_keys_do_not_pollute_history_or_crash (test_v2_regressions.HookTests.test_mixed_unknown_keys_do_not_pollute_history_or_crash)
+有效键与未知键混在一起时，未知键不该进额度历史，也不该抛异常。 ... ok
+test_normalize_preserves_exact_zero (test_v2_regressions.HookTests.test_normalize_preserves_exact_zero) ... ok
+test_num_or_keeps_real_zero (test_v2_regressions.HookTests.test_num_or_keeps_real_zero)
+势场里 `x or 50.0` 会把真实 0 抹成 50。 ... ok
+test_occ_zero_and_invalid_fields_do_not_break_injection (test_v2_regressions.HookTests.test_occ_zero_and_invalid_fields_do_not_break_injection) ... ok
+test_voice_intimacy_filter_is_wired_through_real_hook (test_v2_regressions.HookTests.test_voice_intimacy_filter_is_wired_through_real_hook) ... ok
+test_zero_impulse_does_not_discount_later_real_emotion (test_v2_regressions.HookTests.test_zero_impulse_does_not_discount_later_real_emotion)
+零冲量若被记成一次重复事件，会让随后的真实 Anger 被折扣吃掉。 ... ok
+test_zero_is_preserved_through_real_hook (test_v2_regressions.HookTests.test_zero_is_preserved_through_real_hook) ... ok
+test_core_couples_but_scene_stays_local (test_zz_mood_e2e.MoodE2E.test_core_couples_but_scene_stays_local) ... ok
+
+----------------------------------------------------------------------
+Ran 26 tests in 0.285s
+
+OK

@@ -1,0 +1,24 @@
+集合            条数   strict     top2   accept  accept2
+调参 私聊         40   95.0%   95.0%        —        —
+调参 群聊         40   97.5%   97.5%        —        —
+开发 私聊         15   53.3%   60.0%    80.0%    80.0%
+开发 群聊         15   53.3%   60.0%    80.0%    80.0%
+
+=== 严格未命中 ===
+[调参 私聊] 要不还是算了吧                  期望 probe   判成 answer
+[调参 私聊] 在吗                       期望 dodge   判成 answer
+[调参 群聊] 要不还是算了吧                  期望 probe   判成 answer
+[开发 私聊] 我在想是不是该辞职了               期望 care    判成 probe
+[开发 私聊] 笑死                       期望 dodge   判成 answer
+[开发 私聊] 鱼鱼                       期望 dodge   判成 answer
+[开发 私聊] 我今天升职了！                  期望 care    判成 answer
+[开发 私聊] 你昨天怎么没回我                 期望 probe   判成 answer
+[开发 私聊] 算了不说了                    期望 dodge   判成 answer
+[开发 私聊] 在干嘛                      期望 share   判成 answer
+[开发 群聊] 我在想是不是该辞职了               期望 care    判成 probe
+[开发 群聊] 笑死                       期望 dodge   判成 answer
+[开发 群聊] 鱼鱼                       期望 dodge   判成 answer
+[开发 群聊] 我今天升职了！                  期望 care    判成 answer
+[开发 群聊] 你昨天怎么没回我                 期望 probe   判成 answer
+[开发 群聊] 算了不说了                    期望 dodge   判成 answer
+[开发 群聊] 在干嘛                      期望 share   判成 answer

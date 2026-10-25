@@ -1,0 +1,2 @@
+# 本插件只依赖标准库与 AstrBot 自身，无需额外安装。
+# 运行自检：/mind selftest

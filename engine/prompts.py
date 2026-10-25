@@ -52,6 +52,9 @@ def render(
     recent: list[str],
     kb_hits: list[str],
     voice_lines: list[str],
+    diary_hits: list[dict] | None = None,
+    claims: list[str] | None = None,
+    beliefs: list[str] | None = None,
     scene: str,
     max_chars: int = 1200,
     line_chars: int = 15,
@@ -69,6 +72,15 @@ def render(
     ]
     if profile_line:
         lines.append(f"- 我对他的了解：{profile_line}")
+
+    if beliefs:
+        # 信念是她自己沉淀的，措辞必须写成「你已经这样认为了」，
+        # 而不是再给她一条任务——否则会变成第五个指令源。
+        lines.append("- 这些是你自己慢慢得出的看法，不用每句都提，但说话时会带着：")
+        for _b in beliefs[:2]:
+            _t = (_b.get("claim") if isinstance(_b, dict) else _b) or ""
+            if _t:
+                lines.append(f"  · {_t}")
 
     if decision:
         lead_act = (decision.get("lead") or [("answer", 0.0)])[0][0]
@@ -105,6 +117,18 @@ def render(
             else "- 这一轮说：1 条，或者干脆不回"
         )
     # 决策与任务长度约束放在可裁剪素材前，避免素材挤掉主要求。
+    if claims:
+        lines.append("- 你以前对这类东西有过判断（可以拿出来用）：")
+        for c in claims[:2]:
+            lines.append("  · " + str(c).replace("\n", " ")[:140])
+        lines.append("  （只有当前界面亲自经历的，才能说“我刚看过”；如果写着“听小鲸鱼说过”，就保留这个来源，不要冒充刚刚亲历。）")
+    if diary_hits:
+        lines.append("- 你想起自己以前写过的：")
+        for d in diary_hits[:2]:
+            day = d.get("date") or ""
+            body = (d.get("text") or "").replace("\n", " ")[:120]
+            lines.append(f"  · {day}：{body}")
+        lines.append("  （这是你自己写过的东西，不是资料；想说就用自己的话提一句，不想提就放着。）")
     if kb_hits:
         lines.append("- 你记得的相关常识：")
         for hit in kb_hits:

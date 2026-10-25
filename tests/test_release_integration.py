@@ -12,6 +12,11 @@ import test_v2_regressions as fixture
 from test_v2_regressions import plugin, engine
 
 
+def injected(req):
+    """1.1.2 起注入写在 extra_user_content_parts，不再动 system_prompt。"""
+    return "".join(getattr(p, "text", "") for p in (getattr(req, "extra_user_content_parts", None) or []))
+
+
 def event(message, uid="alice", group=False):
     return types.SimpleNamespace(
         message_str=message,
@@ -19,11 +24,6 @@ def event(message, uid="alice", group=False):
         get_sender_id=lambda: uid, get_self_id=lambda: "synthetic_bot",
         is_admin=lambda: True, plain_result=lambda value: value)
 
-
-
-def _inj(req):
-    """取本轮注入到 extra_user_content_parts 的文本。"""
-    return "".join(getattr(p, "text", "") for p in getattr(req, "extra_user_content_parts", []))
 
 class StateIntegrationTests(unittest.TestCase):
     def make(self, directory, **config):
@@ -152,9 +152,9 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(logs[-1]["length_mode"], mode)
             self.assertEqual(logs[-1]["budget"], budget)
             if mode == "task":
-                self.assertIn("字数与条数限制不适用", _inj(req))
+                self.assertIn("字数与条数限制不适用", injected(req))
             else:
-                self.assertIn("这一轮说：1 条左右", _inj(req))
+                self.assertIn("这一轮说：1 条左右", injected(req))
 
     async def test_failure_has_traceback_rate_limit_and_recovers(self):
         m, _ = fixture.HookTests().make_mind(50)
@@ -165,7 +165,7 @@ class HookIntegrationTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(3):
                 req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
                 await m.before_llm(event("你好"), req)
-                self.assertEqual(req.system_prompt, "BASE")
+                self.assertEqual(injected(req), "")
             self.assertEqual(errors.call_count, 1)
             self.assertIsNotNone(errors.call_args.kwargs["exc_info"][2])
             self.assertEqual(m._health["inject"]["consecutive"], 3)

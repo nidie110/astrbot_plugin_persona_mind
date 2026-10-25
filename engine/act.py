@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import re
 
-from .appraisal import normalize_user_mood
+from .appraisal import normalize_user_mood, normalize_appraisal_number, normalize_want_from_me
 
 # ---------------------------------------------------------------- 名称表
 
@@ -68,7 +68,7 @@ ACT_HINTS = {
     "tease": "损他一句，但要让他听出是在乎",
     "probe": "问一个具体的问题，别泛泛地问",
     "dodge": "话可以短，可以不接，不用硬聊",
-    "coy": "撒个娇，直白一点，别绕",
+    "coy": "接住他的亲昵，撩回去一句（应一声、要一点、顺着他的话头说），别点评他的用词",
     "seek": "说一句自己的低落，允许他接住",
 }
 
@@ -77,7 +77,7 @@ TONE_HINTS = {
     "warm": "语气放软，别损",
     "dry": "话少一点，别解释",
     "cold": "不加语气词，不哄",
-    "playful": "可以带笑、带语气词",
+    "playful": "可以撩回去，带笑、带语气词，别挑他的用词",
     "sharp": "可以刺，但收着点",
     "soft": "声音放轻，短句",
 }
@@ -122,6 +122,15 @@ COMMAND_WORDS = (
 COY_WORDS = (
     "好不好嘛", "求你了", "哄我", "夸夸", "夸我", "抱抱", "抱我", "亲亲",
     "不理你了", "不理我", "再说一遍", "陪我", "你哄", "亲一个", "贴贴",
+)
+
+# 亲昵称呼：不是「请求撒娇」，而是「他在用亲昵的方式说话」。
+# 2026-10-24 实测：对方全程「宝宝 / 乖 / 可爱鱼」，COY_WORDS 一个都没命中，
+# 于是 coy 永远进不了候选，她只能从 answer/tease 里选，
+# 表现成逐句纠正用词的"语文老师"。亲昵词单独成一类，权重也不同。
+INTIMATE_WORDS = (
+    "宝宝", "宝贝", "乖乖", "小可爱", "可爱鱼", "亲爱的", "亲爱",
+    "小鱼干", "小鱼", "囡囡", "揉揉", "摸摸", "rua", "心疼",
 )
 
 # 空转信号：没内容、没请求、也没情绪，只是把话头递过来。
@@ -187,6 +196,7 @@ def evidence(msg: str, play_bias: float = 0.2, user_mood: float = 50.0, prev: st
     explicit_play = _hit(direct, PLAY_WORDS)
 
     coy_hint = 1.0 if _hit(msg, COY_WORDS) else 0.0
+    intimate = 1.0 if _hit(msg, INTIMATE_WORDS) else 0.0
     probe_hint = 1.0 if _hit(msg, PROBE_WORDS) else 0.0
     ask_her = 1.0 if RE_ASK_HER.search(msg) else 0.0
     hesitate = 1.0 if RE_HESITATE.search(msg) else 0.0
@@ -209,13 +219,14 @@ def evidence(msg: str, play_bias: float = 0.2, user_mood: float = 50.0, prev: st
         empty = 0.0
     elif str(scene) == "group" and msg.strip() in ("在吗", "在不在", "在么", "在嘛"):
         empty = 1.0  # 群里没点名，先不插话
-    if coy_hint > 0:
-        empty = 0.0  # 有明确的撒娇请求就不是空转
+    if coy_hint > 0 or intimate > 0:
+        empty = 0.0  # 有撒娇请求或在用亲昵方式说话，都不是空转
     # 隐私词必须指向她本人：「我的地址变了」是在说自己的事，不是打听她。
     privacy = 1.0 if (_hit(msg, PRIVACY_WORDS) and ("你" in msg or "多少" in msg)) else 0.0
 
     return {
         "coy_hint": coy_hint,
+        "intimate": intimate,
         "probe_hint": probe_hint,
         "ask_her": ask_her,
         "hesitate": hesitate,
@@ -267,6 +278,8 @@ def decide(
     aggression_other: float | None = None,
     affection: float | None = None,
     libido_other: float | None = None,
+    thought: dict | None = None,
+    beliefs: list[str] | None = None,
 ) -> dict:
     """返回这一轮该做什么、用什么口吻、说几条。
 
@@ -331,13 +344,18 @@ def decide(
     # ---- 八个动作的基础分（证据主导，性格只作底色）
     answer = 0.32 + 0.50 * ev["command"] + 0.20 * ev["asked"] * (1.0 - ev["play"])
     care = 0.50 * ev["comfort"] + 0.30 * ev["self_neg"] + 0.20 * I * (1.0 - p["N"])         + 0.35 * ev["hesitate"] + 0.45 * ev["miss"]
-    share = 0.55 * ev["material"] + 0.25 * P + 0.20 * p["E"] + 0.55 * ev["ask_her"]
+    # 亲昵语境下她会更敢说自己的（"那你倒是买啊""我可记着了"），
+    # 直女的本质不是不会撒娇，是不敢接话头。
+    share = 0.55 * ev["material"] + 0.25 * P + 0.20 * p["E"] + 0.55 * ev["ask_her"] + 0.10 * ev["intimate"]
+    # 生疏期不主动讲自己的事（与语料分级同一条边界，别让她刚认识就掏心窝）
+    if I < 0.40:
+        share *= 0.60
     tease = 0.45 * ev["play"] + 0.25 * P + 0.20 * (1.0 - p["A"]) + 0.10 * T
     probe = 0.42 * ev["gap"] + 0.18 * p["O"] + 0.12 * p["E"] + 0.55 * ev["probe_hint"]         + 0.30 * ev["hesitate"]
     # 躲开：对方只是递话头（空转/越界），或她这一刻本来就不想接。
     dodge = 0.30 * (1.0 - Ar) + 0.15 * (1.0 - I) + 0.18 * group         + 0.55 * ev["empty"] + 0.35 * ev["privacy"]
     # 撒娇：语言标记为主，关系近 + 心情好只作加成（缺标记就不成立）
-    coy = 0.65 * ev["coy_hint"] + 0.18 * T * P
+    coy = 0.65 * ev["coy_hint"] + 0.18 * T * P + 0.45 * ev["intimate"]
     # 求安慰：自己情绪低 + 神经质高（内在驱动，不由对方消息决定）
     seek = 0.70 * (1.0 - P) * (0.35 + 0.65 * p["N"])
     # 对方说「算了/不说了」：收口，不追问也不再自说自话
@@ -423,6 +441,12 @@ def decide(
         "probe": probe, "dodge": dodge, "coy": coy, "seek": seek,
     }
 
+    # 判读层证据先归一化：既要参与资格判断（下面 allowed），也要参与加权。
+    # 三条约束：只对仍具资格的 act 生效；单项增量 0.10~0.30；他骂她时不接入。
+    want_me = ""
+    if isinstance(thought, dict):
+        want_me = normalize_want_from_me(thought.get("want_from_me"))
+
     # 主行为资格先于排序。明确任务与关怀可以并存，不竞争唯一名额。
     secondary_acts = []
     if ev["command"]:
@@ -437,15 +461,83 @@ def decide(
         allowed = {"answer"}
     else:
         allowed = set(raw)
-        if not (ev["explicit_play"] or ev["angry"]):
+        if not (ev["explicit_play"] or ev["angry"] or want_me == "play"):
             allowed.discard("tease")
         # 撒娇资格由语言标记决定：对方递了撒娇的话头（嘛/抱抱/夸夸）才接。
-        # 旧条件要求 explicit_play + T/I 都很高，结果 coc 永远进不了候选。
-        if not (ev["coy_hint"] > 0 and T >= 0.5 and I >= 0.40):
+        # 判读层说「想被夸」也算递了话头，但 T/I 关系门槛照样守——不能靠加分硬顶。
+        if not (
+            (ev["coy_hint"] > 0 or ev["intimate"] > 0 or want_me == "praise")
+            and T >= 0.5
+            and I >= 0.40
+        ):
             allowed.discard("coy")
         # 与生疏档「别主动讲自己的事」保持一致；低落不构成越过关系边界的理由。
         if I < 0.40:
             allowed.discard("seek")
+
+    # ---- 判读层证据：want_from_me 决定「他到底要我干什么」。
+    # 这是把「理解」接进「动作」的那根线：在此之前 thought 只写日志、act 只看关键词，
+    # 两边各算各的，才会出现「thought 说求安慰、act 说 share、回复在损人」。
+    # 约束一：allowed 已算完，这里只影响仍有资格的 act，不会把被关系门槛丢弃的拉回来。
+    # 约束二：单项增量 0.10~0.30，在 t=0.10 的 softmax 下约 3~20 倍权重——
+    #         足以改变排序，不足以顶掉词表硬证据。
+    # 约束三：他骂她时（ev["angry"]）不接入，猜错了不能反过来哄骂她的人。
+    if want_me and not ev["angry"]:
+        if want_me == "comfort" and not support_needed:
+            raw["care"] = raw.get("care", 0.0) + 0.30
+            raw["tease"] = raw.get("tease", 0.0) * 0.50
+            reason.append("tom_comfort")
+        elif want_me == "vent":
+            raw["care"] = raw.get("care", 0.0) + 0.12
+            raw["tease"] = raw.get("tease", 0.0) + 0.06
+            reason.append("tom_vent")
+        elif want_me == "advice":
+            raw["answer"] = raw.get("answer", 0.0) + 0.20
+            raw["tease"] = raw.get("tease", 0.0) * 0.60
+            reason.append("tom_advice")
+        elif want_me == "praise" and "coy" in allowed:
+            raw["coy"] = raw.get("coy", 0.0) + 0.20
+            raw["share"] = raw.get("share", 0.0) + 0.08
+            reason.append("tom_praise")
+        elif want_me == "play" and "tease" in allowed:
+            raw["tease"] = raw.get("tease", 0.0) + 0.15
+            reason.append("tom_play")
+        elif want_me == "listen":
+            reason.append("tom_listen")  # 不加分，只改 act_hint
+        elif want_me == "none" and scene == "group":
+            # 模板默认值可能就是 none，模型偷懒也会给 none；
+            # 必须再加一道「这条跟她无关」的确认，否则群里每条都把 dodge 顶成 lead。
+            rel = normalize_appraisal_number((thought or {}).get("relevance"), 0.0, 1.0, 0.5)
+            if rel < 0.35:
+                raw["dodge"] = raw.get("dodge", 0.0) + 0.15
+                reason.append("tom_none")
+
+    # ---- 自我模型：她对他的长期判断（beliefs）。
+    # 与 thought 分工：thought 是「他这轮想要什么」，beliefs 是「我跟他这么久了，
+    # 知道他是这样的人」。幅度更小（0.04~0.08），因为它影响的是倾向，不是这一轮的主导。
+    # 分派按 topic（专家建议 A）：中文子串改一个字就静默失效，不能当契约用。
+    for _b in (beliefs or [])[:2]:
+        if isinstance(_b, dict):
+            _topic = str(_b.get("topic") or "")
+            _txt = str(_b.get("claim") or "")
+        else:
+            _topic, _txt = "", str(_b or "")
+        if not _txt and not _topic:
+            continue
+        _is = lambda t, *kw: _topic == t or (not _topic and all(k in _txt for k in kw))  # noqa: E731
+        if _is("comfort", "难过", "找我"):
+            raw["care"] = raw.get("care", 0.0) + 0.06
+            reason.append("belief_care")
+        elif _is("praise", "夸", "真心"):
+            if "coy" in allowed:
+                raw["coy"] = raw.get("coy", 0.0) + 0.08
+            reason.append("belief_coy")
+        elif _is("advice", "问我该"):
+            raw["answer"] = raw.get("answer", 0.0) + 0.05
+            reason.append("belief_answer")
+        elif (_topic in ("sharp", "empty") or (not _topic and _is("", "不喜欢被这样说"))) and ev["angry"]:
+            raw["dodge"] = raw.get("dodge", 0.0) * 1.15 + 0.04
+            reason.append("belief_boundary")
 
     # ---- softmax 拉开差距（温度低=更坚决）
     t = 0.10
@@ -504,8 +596,14 @@ def decide(
         "tone_hint": TONE_HINTS.get(tone, ""),
         "act_hint": (
             "顺着他的意思收住这个话题，简短回应一句，不追问、不续聊，也不把话题转到自己身上"
-            if close_topic else ACT_HINTS.get(lead_act, "")
+            if close_topic
+            else (
+                "他要的是被听见，不是方案：别给建议、别总结、别问解决方案，接一句表示听见了就行"
+                if (want_me == "listen" and lead_act == "answer")
+                else ACT_HINTS.get(lead_act, "")
+            )
         ),
+        "want_from_me": want_me,
         "budget": budget,
         "reason": reason,
         "secondary_acts": secondary_acts,

@@ -58,9 +58,13 @@ THINK_PROMPT = """你是一个聊天机器人的「内心活动」模块，只�
    - control 可控性(0~1)：她能改变结果的程度
 3. 这条消息让我产生的主要情绪，只能选一个：Anger（生气）、Joy（开心）、Guilt（自责）、Worry（担心）、Tender（心软）、Annoyed（烦）、None（无波动）
 4. 对方情绪值 mood(0~100，0 很差 100 很好)
+5. 对方此刻最想从我这里得到什么，只能选一个：
+   comfort（想被安慰）/ vent（想有人陪着一起骂）/ advice（想要办法）/ listen（只是说说，不需要回应）/ praise（想被夸）/ play（想玩闹）/ none（随口一说，跟我没关系）
+   只写上面 7 个英文小写单词之一，不要加括号解释、不要写中文；拿不准就留空字符串 ""。
+   注意：这一项决定「我该干什么」，判错了会答非所问。宁可选 listen，也不要硬判成 comfort。
 
 输出：
-{{"doing":"","where":"","mood":"","want":"","relevance":0.0,"desirability":0.0,"agency":"other","control":0.0,"emotion":"None","user_mood":50}}"""
+{{"doing":"","where":"","mood":"","want":"","want_from_me":"","relevance":0.0,"desirability":0.0,"agency":"other","control":0.0,"emotion":"None","user_mood":50}}"""
 
 
 def parse_json_block(text: str) -> dict:
@@ -91,6 +95,40 @@ def normalize_appraisal_number(value, low: float, high: float, default: float) -
 def normalize_user_mood(value) -> float:
     """保留合法的最低情绪值 0；无效值回退到中性。"""
     return normalize_appraisal_number(value, 0.0, 100.0, 50.0)
+
+
+WANT_CHOICES = ("comfort", "vent", "advice", "listen", "praise", "play", "none")
+
+_WANT_ALIASES = {
+    "安慰": "comfort", "求安慰": "comfort", "想被安慰": "comfort",
+    "吐槽": "vent", "一起骂": "vent", "陪着骂": "vent",
+    "建议": "advice", "办法": "advice", "方案": "advice",
+    "倾诉": "listen", "只想说说": "listen", "说说就好": "listen",
+    "夸": "praise", "想被夸": "praise", "求夸": "praise",
+    "玩闹": "play", "想玩": "play", "打闹": "play",
+    "随口一说": "none", "跟我没关系": "none", "无关": "none",
+}
+
+
+def normalize_want_from_me(value) -> str:
+    """把模型写脏的 want_from_me 收敛到 7 个枚举；认不出返回 ""（= 不改分数）。
+
+    小模型很容易把 prompt 里的括号说明整段抄回来（"comfort（想被安慰）"），
+    或直接写中文。这些都不该让整条链路静默失效，所以先取开头的英文枚举，
+    再回退到中文别名匹配；实在认不出就当没判，保持原分数。
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    if not text:
+        return ""
+    head = re.match(r"[a-z_]+", text)
+    if head and head.group(0) in WANT_CHOICES:
+        return head.group(0)
+    for alias, canon in _WANT_ALIASES.items():
+        if len(alias) > 1 and alias in text:
+            return canon
+    return ""
 
 
 def thought_to_effects(thought: dict, intensity: float = 1.0) -> tuple[str, dict]:

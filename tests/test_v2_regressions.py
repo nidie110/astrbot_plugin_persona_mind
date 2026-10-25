@@ -30,24 +30,23 @@ def load_plugin():
     star = types.ModuleType("astrbot.api.star")
     star.Context = star.Star = object
     star.register = lambda *a, **k: lambda cls: cls
-    modules = {"astrbot": types.ModuleType("astrbot"), "astrbot.api": api,
-               "astrbot.api.event": event, "astrbot.api.provider": provider, "astrbot.api.star": star}
-    # 模拟 astrbot.core.agent.message.TextPart（真实环境用来注入用户消息内容）
-    _core = types.ModuleType("astrbot.core")
-    _agent = types.ModuleType("astrbot.core.agent")
-    _msg = types.ModuleType("astrbot.core.agent.message")
+    # 1.1.2 起注入走 AstrBot 官方的 extra_user_content_parts，需要假 TextPart
+    msg_mod = types.ModuleType("astrbot.core.agent.message")
 
     class _TextPart:
-        def __init__(self, text: str = "") -> None:
+        def __init__(self, text: str = ""):
             self.text = text
 
-    _msg.TextPart = _TextPart
-    _core.agent = _agent
-    _agent.message = _msg
-    modules["astrbot"].core = _core
-    modules["astrbot.core"] = _core
-    modules["astrbot.core.agent"] = _agent
-    modules["astrbot.core.agent.message"] = _msg
+    msg_mod.TextPart = _TextPart
+    msg_mod.ContentPart = _TextPart
+    agent_mod = types.ModuleType("astrbot.core.agent")
+    agent_mod.message = msg_mod
+    core_mod = types.ModuleType("astrbot.core")
+    core_mod.agent = agent_mod
+    modules = {"astrbot": types.ModuleType("astrbot"), "astrbot.api": api,
+               "astrbot.api.event": event, "astrbot.api.provider": provider, "astrbot.api.star": star,
+               "astrbot.core": core_mod, "astrbot.core.agent": agent_mod,
+               "astrbot.core.agent.message": msg_mod}
     spec = importlib.util.spec_from_file_location("mind_v2_test_plugin", ROOT / "main.py", submodule_search_locations=[str(ROOT)])
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -75,11 +74,6 @@ def render(decision, **kwargs):
     args.update(kwargs)
     return engine.render(**args)
 
-
-
-def _inj(req):
-    """取本轮注入到 extra_user_content_parts 的文本。"""
-    return "".join(getattr(p, "text", "") for p in getattr(req, "extra_user_content_parts", []))
 
 class DecisionTests(unittest.TestCase):
     def test_distress_excludes_teasing_even_with_direct_insult(self):
@@ -184,10 +178,11 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
         event = types.SimpleNamespace(message_str=message, unified_msg_origin="test:FriendMessage:1", get_sender_id=lambda: "test")
         req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
         await mind.before_llm(event, req)
-        self.assertNotEqual(_inj(req), "")
+        injected = "".join(getattr(p, "text", "") for p in (req.extra_user_content_parts or []))
+        self.assertNotEqual(injected, "")
         self.assertEqual(len(logs), 1)
         self.assertFalse(mind._inflight)
-        return logs[0], _inj(req)
+        return logs[0], injected
 
     async def test_zero_is_preserved_through_real_hook(self):
         log, _ = await self.invoke(0)
@@ -271,7 +266,8 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
             )
             req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
             await mind.before_llm(event, req)
-            self.assertNotEqual(_inj(req), "")
+            j = "".join(getattr(p, "text", "") for p in (req.extra_user_content_parts or []))
+            self.assertNotEqual(j, "")
         self.assertEqual([row["act"] for row in logs], ["dodge"] * 6)
         self.assertEqual([row["budget"] for row in logs], [0, 0, 1, 1, 0, 0])
         self.assertFalse(mind._inflight)
@@ -293,8 +289,9 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
                 mind.profiles.data["I"] = intimacy
                 req = types.SimpleNamespace(system_prompt="BASE", extra_user_content_parts=[])
                 await mind.before_llm(event, req)
-                self.assertIn("普通关心样本", _inj(req))
-                self.assertEqual("只给熟人的亲近样本" in _inj(req), expected)
+                text_now = "".join(getattr(p, "text", "") for p in (req.extra_user_content_parts or []))
+                self.assertIn("普通关心样本", text_now)
+                self.assertEqual("只给熟人的亲近样本" in text_now, expected)
 
         # 换成 share，关系档位才有话语权：亲近档才允许「亲近」组。
         mind.voice.sections = {"说自己的日子": ["自述样本"], "亲近": ["只给熟人的亲近样本"]}
