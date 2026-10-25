@@ -63,8 +63,13 @@ THINK_PROMPT = """你是一个聊天机器人的「内心活动」模块，只�
    只写上面 7 个英文小写单词之一，不要加括号解释、不要写中文；拿不准就留空字符串 ""。
    注意：这一项决定「我该干什么」，判错了会答非所问。宁可选 listen，也不要硬判成 comfort。
 
+6. 他这句话，是在**骂我**，还是在**拿我开玩笑**（损友互怼、逗我、亲昵地损）：
+   insult（真的在骂：嫌我烦、人身攻击、让我滚）/ tease（开玩笑：哈哈、逗你、笨蛋、笑死、语气词带笑）
+   / none（既没骂也没逗）。只写这三个英文单词之一。
+   判不准就写 none——把人家的玩笑当成骂，比漏掉一次真实的不满代价大得多。
+
 输出：
-{{"doing":"","where":"","mood":"","want":"","want_from_me":"","relevance":0.0,"desirability":0.0,"agency":"other","control":0.0,"emotion":"None","user_mood":50}}"""
+{{"doing":"","where":"","mood":"","want":"","want_from_me":"","relevance":0.0,"desirability":0.0,"agency":"other","control":0.0,"emotion":"None","user_mood":50,"bot_affect":"none"}}"""
 
 
 def parse_json_block(text: str) -> dict:
@@ -108,6 +113,35 @@ _WANT_ALIASES = {
     "玩闹": "play", "想玩": "play", "打闹": "play",
     "随口一说": "none", "跟我没关系": "none", "无关": "none",
 }
+
+
+BOT_AFFECT_CHOICES = ("insult", "tease", "none")
+
+_BOT_AFFECT_ALIASES = {
+    "骂": "insult", "攻击": "insult", "人身攻击": "insult", "真骂": "insult",
+    "玩笑": "tease", "开玩笑": "tease", "调侃": "tease", "逗": "tease", "损": "tease",
+    "没骂": "none", "无": "none",
+}
+
+
+def normalize_bot_affect(value) -> str:
+    """把模型写的「这是骂还是玩笑」收敛到 insult / tease / none。
+
+    认不出返回 ""：表示模型没给可用判断，调用方应该保留规则层的结果，
+    而不是当成 none 把真实的不满吃掉。
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    if not text:
+        return ""
+    head = re.match(r"[a-z_]+", text)
+    if head and head.group(0) in BOT_AFFECT_CHOICES:
+        return head.group(0)
+    for alias, canon in _BOT_AFFECT_ALIASES.items():
+        if alias in text:
+            return canon
+    return ""
 
 
 def normalize_want_from_me(value) -> str:

@@ -23,7 +23,12 @@ from __future__ import annotations
 import math
 import re
 
-from .appraisal import normalize_user_mood, normalize_appraisal_number, normalize_want_from_me
+from .appraisal import (
+    normalize_user_mood,
+    normalize_appraisal_number,
+    normalize_want_from_me,
+    normalize_bot_affect,
+)
 
 # ---------------------------------------------------------------- 名称表
 
@@ -112,6 +117,26 @@ PROBE_WORDS = (
 PLAY_WORDS = ("笨蛋", "傻", "憨", "哈哈", "开玩笑", "逗你", "嘿嘿", "胖子", "小胖", "这么乖", "真乖", "肥鱼你", "小胖子")
 # 只有明确的贬义组合才算「骂她」；叫她名字本身不是敌意
 ANGRY_AT_BOT = ("你这胖鱼", "你个笨蛋", "你个死鱼", "臭鱼", "死肥鱼")
+# 2026-10-25：「你个笨蛋」这种既可能是真骂也可能是撒娇，交给 _bot_affect 分级
+# 真·攻击：指向她本人的人格否定、驱赶、厌恶
+INSULT_WORDS = (
+    "垃圾", "废物", "去死", "滚蛋", "滚开", "闭嘴", "恶心", "智障", "傻逼",
+    "神经病", "你他妈", "欠揍", "别烦我", "烦死了你", "讨厌你", "烦你", "不想理你",
+    "烦人", "真烦", "破插件", "破玩意", "烂货", "去你的",
+)
+# 祈使式攻击不靠第二人称也成立：「闭嘴」「滚」本身就是赶人走
+STRONG_INSULT = ("闭嘴", "滚开", "滚蛋", "你滚", "给我滚", "去死", "别烦我", "你他妈", "智障", "傻逼", "神经病", "去你的")
+# 玩笑信号：有这些在场，贬义词更像是损友互怼
+# 注意别把「傻」这种能组成「傻逼」的字眼当信号，否则真骂会被洗白成玩笑
+TEASE_CUES = (
+    "哈哈", "嘿嘿", "笑死", "绷不住", "狗头", "开玩笑", "逗你", "逗我", "闹着玩",
+    "233", "绷", "乐死",
+)
+# 只用于「损着玩」的词：命中就当调侃，不必先有贬义词
+TEASE_WORDS = ("笨蛋", "傻", "憨", "胖", "小胖", "肥鱼", "可爱", "逗你", "逗我", "这么乖", "真乖")
+RE_TEASE_TAIL = re.compile(r"[啦呀嘛呗咯嗷喔哦~～啧]+[。！!~～…]*$")
+RE_TEASE_RING = re.compile(r"(是不是傻|你傻不傻|傻不傻|你个小|怎么这么(?:笨|憨|傻))")
+RE_SECOND_PERSON = re.compile(r"(?:你|您|鱼|bot|机器人)")
 COMMAND_WORDS = (
     "帮我", "写个", "写一个", "写段", "生成", "查一下", "查查", "搜一下", "翻译",
     "解释一下", "怎么做", "怎么弄", "如何", "报错", "总结一下", "整理", "算一下",
@@ -157,6 +182,39 @@ RE_GIVEUP = re.compile(r"(算了|不说了|随便吧|懒得说)")
 RE_QUESTION = re.compile(r"[？?]\s*$|吗|呢|什么|怎么|哪|多少|几[号点岁]")
 
 
+def _bot_affect(direct: str, msg: str, explicit_play: float) -> str:
+    """他这句是在骂她，还是在拿她开玩笑。
+
+    规则只做粗筛，判断顺序是「先看有没有贬义，再看有没有玩笑信号」：
+    有玩笑信号（哈哈/笨蛋/语气词/反问损）就当调侃，剩下还硬的才算骂。
+    宁可把真骂判成玩笑——错判成攻击会让关系凭白掉分，反过来只是少扣一次。
+    """
+    text = direct or ""
+    harsh = bool(
+        [w for w in INSULT_WORDS if w in text]
+        or [w for w in ANGRY_AT_BOT if w in text]
+        or [w for w in STRONG_INSULT if w in text]
+    )
+    playful = bool(
+        # explicit_play 不算玩笑信号：PLAY_WORDS 里有「傻」「笨蛋」，
+        # 真骂「傻逼东西」会被它洗成调侃，前面那些具体语气记号才算数
+        [c for c in TEASE_CUES if c in msg]
+        or RE_TEASE_TAIL.search(text)
+        or RE_TEASE_RING.search(text)
+        or re.search(r"[~～]|[!！]{2,}|\?{2,}", text)
+    )
+    if harsh:
+        # 有玩笑信号 -> 调侃；没有玩笑信号但也没指向她 -> 与她无关
+        if playful:
+            return "tease"
+        if [w for w in STRONG_INSULT if w in text] or RE_SECOND_PERSON.search(text):
+            return "insult"
+        return "none"
+    if any(w in text for w in TEASE_WORDS):
+        return "tease"
+    return "none"
+
+
 def _direct_text(msg: str) -> str:
     """提取可归于当前用户的直接表达，供攻击/玩笑与收口证据使用。"""
     text = re.sub(r"```[\s\S]*?```", " ", msg)
@@ -192,8 +250,12 @@ def evidence(msg: str, play_bias: float = 0.2, user_mood: float = 50.0, prev: st
         r"(?:废物|没用|不行|很菜|太菜|菜鸟|好笨|真笨|太笨)", self_text
     ):
         self_neg = 0.9
-    angry = 1.0 if _hit(direct, ANGRY_AT_BOT) else 0.0
     explicit_play = _hit(direct, PLAY_WORDS)
+    # 「骂」还是「开玩笑」：规则先判一次，稍后模型给了判断就覆盖它
+    bot_affect = _bot_affect(direct, msg, explicit_play)
+    if bot_affect == "none" and _hit(direct, ANGRY_AT_BOT) and not explicit_play:
+        bot_affect = "insult"  # 老词表里的「臭鱼」这类，仍然当作真骂
+    angry = 1.0 if bot_affect == "insult" else 0.0
 
     coy_hint = 1.0 if _hit(msg, COY_WORDS) else 0.0
     intimate = 1.0 if _hit(msg, INTIMATE_WORDS) else 0.0
@@ -243,6 +305,7 @@ def evidence(msg: str, play_bias: float = 0.2, user_mood: float = 50.0, prev: st
         "explicit_play": explicit_play,
         "command": command,
         "angry": angry,
+        "bot_affect": bot_affect,
         "mood": mood,
         "joy": joy,
         "len": len(msg),
@@ -302,6 +365,12 @@ def decide(
     scene = scene or "private"
 
     ev = evidence(msg, play_bias, user_mood, prev=prev, scene=scene, prev_asked=prev_asked)
+    # 她自己判断的「这是骂还是玩笑」优先于词表：模型说得出理由，规则只做兜底。
+    # 只接受 insult/tease/none 三个值，认不出就保留规则结论，别把真实的不满吃掉。
+    _llm_affect = normalize_bot_affect(thought.get("bot_affect")) if isinstance(thought, dict) else ""
+    if _llm_affect:
+        ev["bot_affect"] = _llm_affect
+        ev["angry"] = 1.0 if _llm_affect == "insult" else 0.0
     p = {k: _norm(persona.get(k, 50)) for k in ("O", "C", "E", "A", "N")}
     a = affect or {}
     P, Ar = _norm(a.get("P", 60)), _norm(a.get("Ar", 45))
@@ -415,6 +484,10 @@ def decide(
         if not ev["self_neg"] and ev["comfort"] <= 0.6:
             care = min(care, 0.12)
         reason.append("angry_at_bot")
+    elif ev.get("bot_affect") == "tease":
+        # 嘴上损、心里没记账：用 playful 口吻接住，不扣信任
+        tease = max(tease, 0.62)
+        reason.append("tease_bot")
     if ev["comfort"] > 0.6:
         care = max(care, 0.65)
         dodge *= 0.25
@@ -604,6 +677,7 @@ def decide(
             )
         ),
         "want_from_me": want_me,
+        "bot_affect": ev.get("bot_affect", "none"),
         "budget": budget,
         "reason": reason,
         "secondary_acts": secondary_acts,

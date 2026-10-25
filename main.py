@@ -1210,7 +1210,8 @@ class MindEngine(Star):
                 profile = self.profiles.touch(
                     uid,
                     msg,
-                    negative=("angry_at_bot" in decision.get("reason", [])),
+                    # 只有真骂才扣信任；开玩笑（tease）不记账
+                    negative=(decision.get("bot_affect") == "insult"),
                     scene=scene,
                 )
             except Exception as e:  # 档案被手工改坏时不能炸掉这一轮对话
@@ -1232,6 +1233,7 @@ class MindEngine(Star):
                 "act_score": round(lead[0][1], 3) if lead else 0,
                 "tone": decision.get("tone"),
                 "act_reason": decision.get("reason"),
+                "bot_affect": decision.get("bot_affect", "none"),
                 "secondary_acts": decision.get("secondary_acts", []),
                 "length_mode": decision.get("length_mode", "chat"),
                 "budget": budget,
