@@ -40,6 +40,12 @@ TEMPLATES = {
     ("capability", "advice"): "他会问我该怎么办",
     ("boundary", "sharp"): "我不喜欢被这样说",
     ("boundary", "empty"): "我不喜欢被敷衍",
+    # 1.2.2：把 want 枚举里没用上的 listen / play 接上，再加两个可观测的模式
+    ("trust", "listen"):    "他心里有事愿意讲给我听",
+    ("routine", "play"):    "他闲下来的时候会来找我闹",
+    ("pattern", "night"):   "他常在夜里还醒着",
+    ("preference", "taste"): "他会跟我讲自己喜欢什么",
+    ("preference", "dislike"): "他知道自己不喜欢什么",
 }
 
 JACCARD_MIN = 0.5
@@ -54,6 +60,11 @@ TOPIC_GROUP = {
     "advice": "advice",
     "sharp": "boundary",
     "empty": "boundary",
+    "listen": "listen",
+    "play": "play",
+    "night": "night",
+    "taste": "taste",
+    "dislike": "taste",
 }
 
 def _topic_group(topic) -> str:
@@ -239,9 +250,10 @@ class SelfModel:
         doing = str(thought.get("doing") or "")
 
         # 分支：want_from_me 决定关系类；强烈情绪决定边界类
-        if want in ("comfort", "vent", "praise", "advice"):
-            kind = "capability" if want == "advice" else "trust"
-            key = (kind, want if want != "advice" else "advice")
+        if want in ("comfort", "vent", "praise", "advice", "listen", "play"):
+            # advice → 能力（她会问我怎么办）；play → 相处习惯；listen → 交底/信任
+            kind = {"advice": "capability", "play": "routine"}.get(want, "trust")
+            key = (kind, want)
             claim = TEMPLATES.get(key)
             if not claim:
                 return None
@@ -258,7 +270,34 @@ class SelfModel:
             # 会让所有陌生人都吃到她的态度（专家指出）。
             scope, src = f"user:{uid}", "user"
             topic = "empty"
+        elif _has_taste(text):
+            # 先判喜好：凌晨说「我超爱吃火锅」该记成偏好，不是作息。
+            # 「讨厌你/不喜欢你」指人，走 sharp 分支，不算偏好（复审指出）。
+            dislike = _is_dislike(text)
+            kind = "preference"
+            claim = TEMPLATES.get(("preference", "dislike" if dislike else "taste"))
+            scope, src = f"user:{uid}", "user"
+            topic = "dislike" if dislike else "taste"
+        elif (
+            _night_hour()
+            and scene == "private"
+            and len((text or "").strip()) >= 6
+            and not _is_empty(text)
+        ):
+            # 深夜还在聊：这是作息，也是「愿意把这段时间给她」。
+            # 门槛：私聊、够长、不是空 @；一晚只种一条，别让 2 点聊天吃光当天配额。
+            seen_night = self.__dict__.setdefault("_night_today", {})
+            if seen_night.get(uid) == _today():
+                return None
+            seen_night[uid] = _today()
+            claim = TEMPLATES.get(("pattern", "night"))
+            kind = "pattern"
+            scope, src = f"user:{uid}", "user"
+            topic = "night"
         else:
+            return None
+
+        if not claim:       # 模板被删/写错时宁可不出候选，也别造出空 claim
             return None
 
         cand = {
@@ -1008,3 +1047,29 @@ def _is_negative(mood: str) -> bool:
 
 def _is_empty(text: str) -> bool:
     return len((text or "").strip()) <= 1
+
+
+def _night_hour(now: float | None = None) -> bool:
+    """现在是不是深夜档（0-4 点）。"""
+    hour = time.localtime(now).tm_hour if now is not None else time.localtime().tm_hour
+    return 0 <= hour <= 4
+
+
+_TASTE_POS = re.compile(r"喜欢|最爱|爱听|爱吃|爱看|入坑|安利")
+_TASTE_NEG = re.compile(r"讨厌|不喜欢|最怕|受不了|受不了了")
+# 指人的喜欢/讨厌不是偏好：「我讨厌你」不能记成「他会跟我讲自己喜欢什么」
+_TASTE_TARGET = re.compile(r"[你您]")
+
+
+def _is_dislike(text: str) -> bool:
+    return bool(_TASTE_NEG.search(text or ""))
+
+
+def _has_taste(text: str) -> bool:
+    """这句话是不是在讲自己的喜好/雷点（不包括针对她本人的）。"""
+    s = (text or "").strip()
+    if not s:
+        return False
+    if _TASTE_TARGET.search(s[:8]) or "你们" in s:
+        return False
+    return bool(_TASTE_POS.search(s) or _TASTE_NEG.search(s))

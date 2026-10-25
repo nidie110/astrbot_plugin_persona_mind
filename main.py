@@ -100,6 +100,11 @@ DEFAULTS = {
     "affect_d": 50,
     "rel_t": 55,
     "rel_i": 40,
+    # 1.2.2 信任 T 的动力学：此前 T 恒等于初始值，关系只有一个轴在动
+    "rel_trust_day_gain": 0.4,      # 隔天还来一次 +0.4
+    "rel_trust_share_gain": 0.1,    # 私聊里愿意多讲（≥20 字）+0.1
+    "rel_trust_penalty": 0.8,       # 被攻击 -0.8
+    "rel_trust_cap_day": 1.5,       # 每日总上限，防刷屏
     "drive_source": "internal",
     "chars_per_line": 15,
     "diary_enable": True,
@@ -224,7 +229,15 @@ class MindEngine(Star):
         self.affect = self.mood.core  # 兼容旧读法
         self._load_state()
 
-        self.profiles = ProfileStore(self.dir / "profiles", self.cfg["rel_t"], self.cfg["rel_i"])
+        self.profiles = ProfileStore(
+            self.dir / "profiles",
+            self.cfg["rel_t"],
+            self.cfg["rel_i"],
+            trust_day_gain=float(num_or(self.cfg.get("rel_trust_day_gain"), 0.4)),
+            trust_share_gain=float(num_or(self.cfg.get("rel_trust_share_gain"), 0.1)),
+            trust_penalty=float(num_or(self.cfg.get("rel_trust_penalty"), 0.8)),
+            trust_cap_day=float(num_or(self.cfg.get("rel_trust_cap_day"), 1.5)),
+        )
         self._auto_provider_id: str | None = None  # 仅用于记录选中项，不缓存不可用结果
         self.last_decision: dict = {}  # {umo: 快照}，供 /mind why 诊断（按会话隔离）
         # 按会话分别记「连续装死」次数：umo -> [次数, 最后使用时间]
@@ -1193,12 +1206,16 @@ class MindEngine(Star):
 
         # 关系推进 + 侧写样本（关掉 profile_enable 就只读不写，不再偷偷采集）
         if self.cfg.get("profile_enable", True):
-            profile = self.profiles.touch(
-                uid,
-                msg,
-                negative=("angry_at_bot" in decision.get("reason", [])),
-                scene=scene,
-            )
+            try:
+                profile = self.profiles.touch(
+                    uid,
+                    msg,
+                    negative=("angry_at_bot" in decision.get("reason", [])),
+                    scene=scene,
+                )
+            except Exception as e:  # 档案被手工改坏时不能炸掉这一轮对话
+                self._record_failure("profile", e)
+                profile = self.profiles.load(uid)
         else:
             profile = self.profiles.load(uid)
         self._save_state()
@@ -1337,6 +1354,10 @@ class MindEngine(Star):
         "chars_per_line": (5, 120),
         "max_inject_chars": (200, 4000),
         "think_timeout": (3, 120),
+        "rel_trust_day_gain": (0.0, 5.0),
+        "rel_trust_share_gain": (0.0, 5.0),
+        "rel_trust_penalty": (0.0, 10.0),
+        "rel_trust_cap_day": (0.0, 20.0),
     }
     _CFG_ENUMS = {
         "evolution_mode": ("off", "rule", "daily", "deep"),

@@ -63,6 +63,18 @@
 
 开启"势场"后，关系还会反过来影响当前情绪的表现强度——越亲近的人，影响越明显。
 
+**可信度 T 是会动的**（1.2.2 起）：记的是「这段时间你怎么对她」，不是「她多喜欢你」。三条规则，全部有当日上限，防止一次聊爽就拉满：
+
+| 事件 | 变化 | 附加条件 |
+|---|---|---|
+| 隔天还来找她 | +`rel_trust_day_gain`（默认 0.4） | 只有私聊算，群聊只滚动日期 |
+| 愿意讲自己的事 | +`rel_trust_share_gain`（默认 0.1） | 有实词才算；「嗯」「哈哈」「🙂」不算 |
+| 骂她 | −`rel_trust_penalty`（默认 0.8） | 记净额，连骂也不会把额度刷成负收益 |
+
+当天净变动不超过 `rel_trust_cap_day`（默认 1.5，涨跌共用：一天最多净涨 1.5，也最多净跌 1.5）。隔三天没来再出现，也只补一次"返场"分，不会把缺席的天数补回来。
+
+> 日期按**宿主时区**算（`time.strftime("%Y-%m-%d")`）。Docker 里容器常是 UTC，和北京时间差 8 小时：容器里的一天从北京时间 08:00 才开始，"当日额度"和"隔天返场"都会跟着错位。部署在容器里的话，请给容器设 `TZ=Asia/Shanghai`。
+
 ### 记得住人：人物侧写
 
 每轮积累样本，每 20 轮（可配）自动归纳一次侧写：这个人关心什么、说话什么风格、和他相处要注意什么。下次开口时这些认知会参与决策。
@@ -190,7 +202,7 @@
 
 ## 配置
 
-面板共 **50 项**，按用途分组：
+面板共 **53 项**，按用途分组：
 
 | 分组 | 关键项 |
 |---|---|
@@ -198,7 +210,7 @@
 | 模型 | `think_provider`、`think_timeout`、`max_inject_chars` |
 | 人格 | `persona_o/c/e/a/n`（大五），`chars_per_line` |
 | 情绪 | `affect_p/ar/d`（基线）、`field_strength`（势场强度） |
-| 关系 | `rel_t`、`rel_i` |
+| 关系 | `rel_t`、`rel_i`、`rel_trust_day_gain`、`rel_trust_share_gain`、`rel_trust_penalty`、`rel_trust_cap_day` |
 | 侧写 | `profile_enable`、`summarize_every` |
 | 知识与语料 | `kb_enable`、`voice_enable`、`extra_kb_files` |
 | 日记 | `diary_enable`、`diary_at`、`diary_record_chat`、`diary_chat_gap`、`diary_lookback`、`diary_keep_days`、`diary_mood_recall` |
@@ -252,6 +264,7 @@ data/plugin_data/astrbot_plugin_persona_mind/
 - **知识是关键词检索**，侧写是模型推断，都可能出错，且没有事实校验机制
 - **注入只是要求**：主模型、AstrBot 人格和其他插件都会影响最终措辞
 - **群聊连续不接话有开口限制**，不是所有场景都会回应
+- **深夜作息的判定窗口是 0:00–4:59**（`engine/self_model.py` 的 `_night_hour`），5 点以后不算熬夜；同一晚只种一条，避免全被深夜抢走
 
 调半衰期、core/scene 权重这类深层参数目前需要改 `engine/affect.py` 里的 `Mood` 常量——面板没暴露。
 

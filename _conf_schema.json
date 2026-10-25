@@ -132,6 +132,30 @@
     "description": "旧侧写缺失亲密度时的默认 I；全新用户从生疏档 I=20 开始",
     "default": 40
   },
+  "rel_trust_day_gain": {
+    "type": "float",
+    "description": "信任 T：隔天还会来找她说话时涨多少（每次 +，当天只算一次）",
+    "default": 0.4,
+    "hint": "隔天还来找她时加多少（只有私聊算，群聊只滚动日期不涨分）。"
+  },
+  "rel_trust_share_gain": {
+    "type": "float",
+    "description": "信任 T：私聊里愿意多讲（≥20 字）时涨多少",
+    "default": 0.1,
+    "hint": "私聊里愿意多讲时每次加多少。只要这句话有实词（不是「嗯」「哈哈」「🙂」这类寒暄/纯语气/纯符号）就算，没有长度门槛。"
+  },
+  "rel_trust_penalty": {
+    "type": "float",
+    "description": "信任 T：被攻击（骂她）时掉多少",
+    "default": 0.8,
+    "hint": "被骂一次掉多少。不是按句累加，而是和当天的加分共用同一个净额度。"
+  },
+  "rel_trust_cap_day": {
+    "type": "float",
+    "description": "信任 T：每天最多涨多少（防止刷屏把信任刷满）",
+    "default": 1.5,
+    "hint": "当天 T 的净变化额度，涨跌共用。默认 1.5 表示一天最多净涨 1.5、最多净跌 1.5；连骂也扣不穿这个地板。"
+  },
   "drive_source": {
     "type": "string",
     "description": "内在驱动来源",

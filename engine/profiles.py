@@ -8,10 +8,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
 import re
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .affect import clamp100, num_or
 
@@ -33,12 +38,50 @@ ALLOWED_LIST = ("兴趣", "雷点", "note")
 SENSITIVE = re.compile(r"\d{11,}|身份证|住址|小区|门牌|银行卡|密码|验证码")
 
 
+def _pos(value, default: float, lo: float, hi: float) -> float:
+    """配置值归一化：非数字/NaN 回落到默认值，再夹进区间。
+
+    构造参数可能被直接调用方传脏（字符串、负数、inf），在这里兜一层，
+    比让 touch() 在跑消息的路径上抛 TypeError 强。
+    """
+    v = float(num_or(value, default))
+    return min(hi, max(lo, v))
+
+# 侧写素材的门：整句都是语气词/标点/数字的不留（"哈哈哈哈""嗯""1"），
+# 但「在成都」「叫我老王」「夜班」这种短事实必须留——它们正是称呼/身份/作息的原料。
+_NOISE = re.compile(r"^[\s哈呵嘿嗨嗯哦啊呀吧呢嘛的了呃喔额噢0-9。，,\.!！?？~～…、\-—_]+$")
+_CJK = re.compile(r"[\u4e00-\u9fa5]{2,}")
+_LATIN = re.compile(r"[A-Za-z]{2,}")
+# 有实词但没信息量的寒暄：单独列，靠长度判断会误杀短事实
+_SMALLTALK = {
+    "在吗", "你好", "晚安", "早安", "好的", "收到", "好耶", "谢谢", "么么", "牛逼",
+    "厉害", "哈哈", "在不在", "睡了", "吃了吗", "干嘛呢", "没事", "算了",
+}
+
+
+def _worth_remembering(text: str, recent: list) -> bool:
+    """这条消息值不值得进侧写素材：非语气词、有实词、且不重复。"""
+    t = (text or "").strip()
+    if not t or _NOISE.match(t):
+        return False
+    core = t.rstrip("啦呀啊哦哟嘛哈")
+    if len(core) <= 4 and core.strip() in _SMALLTALK:
+        return False
+    if not [r for r in _CJK.findall(core) if r not in _SMALLTALK] and not _LATIN.search(core):
+        return False
+    return t[:60] not in recent
+
+
 def empty(uid: str, trust: float = 55.0, intimacy: float = 40.0) -> dict:
     return {
         "uid": uid,
         "昵称": "",
         "T": trust,
         "I": intimacy,
+        # 信任 T 的推进账本：T_day 记账日、T_today 当日量、T_days 来往过几天
+        "T_day": "",
+        "T_today": 0.0,
+        "T_days": 0,
         "count": 0,
         "last_seen": 0,
         "称呼": "",
@@ -61,12 +104,20 @@ class ProfileStore:
         trust: float = 55.0,
         intimacy: float = 40.0,
         new_intimacy: float = 20.0,
+        trust_day_gain: float = 0.4,
+        trust_share_gain: float = 0.1,
+        trust_penalty: float = 0.8,
+        trust_cap_day: float = 1.5,
     ):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.trust = trust
         self.intimacy = intimacy        # 老档案缺字段时的兜底
         self.new_intimacy = new_intimacy  # 全新的人：从生疏档开始
+        self.trust_day_gain = _pos(trust_day_gain, 0.4, 0.0, 5.0)      # 隔天还来：可预期
+        self.trust_share_gain = _pos(trust_share_gain, 0.1, 0.0, 5.0)  # 愿意多讲：自我披露
+        self.trust_penalty = _pos(trust_penalty, 0.8, 0.0, 10.0)       # 被攻击：一次抵两天
+        self.trust_cap_day = _pos(trust_cap_day, 1.5, 0.0, 20.0)       # 当日净额度，防刷屏
 
     def _path(self, uid: str) -> Path:
         safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(uid))[:64] or "unknown"
@@ -81,16 +132,28 @@ class ProfileStore:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     base.update(data)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # 解析不了 ≠ 档案不存在：留一份 .corrupt 备查，别让下一次 save 把
+                # 默认档写回去、把称呼/身份/兴趣这些一次性抹掉。
+                bad = p.with_suffix(".json.corrupt")
+                try:
+                    p.replace(bad)
+                except OSError:
+                    pass
+                logger.warning("[mind] 档案损坏，已另存为 %s 并重新建档", bad)
+            except OSError:
+                logger.warning("[mind] 档案读取失败：%s", p)
         return base
 
     def save(self, profile: dict) -> None:
         keep = {k: v for k, v in profile.items() if k != "recent"}
         keep["recent"] = profile.get("recent", [])[-20:]
-        self._path(profile["uid"]).write_text(
-            json.dumps(keep, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        path = self._path(profile["uid"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 原子写：先写 .tmp 再 os.replace，进程半路被 kill 也不会留下半个 JSON
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(keep, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
 
     def summarize_prompt(self, uid: str) -> str:
         prof = self.load(uid)
@@ -154,15 +217,28 @@ class ProfileStore:
         3. 被骂会掉（negative=True），关系不是只进不出的。
         群聊里别人说话不推进她对某个人的关系，只有私聊或被点名才算。
         """
+        today = time.strftime("%Y-%m-%d")
+        text = (message or "").strip()
+        # 同一条消息在一轮里可能触发多次钩子（重试/多请求）：按指纹只结算一次，
+        # 否则 -0.8 会被扣两三次
+        digest = hashlib.md5(f"{uid}\x00{text}".encode("utf-8")).hexdigest()
+        seen = self.__dict__.setdefault("_touch_seen", {})
+        if seen.get(digest) == today:
+            return self.load(uid)
+        if len(seen) > 400:
+            # 先剪枝再把局部名指到新 dict，否则下面写入的指纹会留在被丢弃的旧对象里，
+            # 超过 400 条之后当天去重就整个失效了
+            seen = self.__dict__["_touch_seen"] = {
+                k: v for k, v in seen.items() if v == today
+            }
+        seen[digest] = today
+
         prof = self.load(uid)
         prof["count"] = int(prof.get("count", 0)) + 1
-
-        today = time.strftime("%Y-%m-%d")
         if prof.get("I_date") != today:
             prof["I_date"] = today
             prof["I_today"] = 0.0
 
-        text = (message or "").strip()
         # 档案来自磁盘 JSON，可能被手工改过或写过 NaN/inf；所有数值先收敛再算。
         gain = max(0.0, num_or(intimacy_gain, 0.0))
         cap = max(0.0, num_or(cap_per_day, 0.0))
@@ -178,7 +254,40 @@ class ProfileStore:
         prof["I"] = round(max(0.0, min(100.0, prev + delta)), 1)
         if delta > 0:
             prof["I_today"] = round(min(cap, max(0.0, num_or(prof.get("I_today"), 0.0)) + delta), 2)
-        if scene == "private":
+
+        # ── 信任 T：靠「跨天还在」和「愿意交底」，不靠刷屏 ─────────
+        # 账本口径（复审后统一）：T_today 记当天「净变化」，涨和跌共用 trust_cap_day
+        # 这一个额度，所以一天最多 +cap、最多 -cap，刷屏和连骂都不会把账算飞。
+        # 三条规则：
+        # 1. 第一次来不算忠诚；私聊里隔天又出现，才说明可预期（群聊只滚动日期）；
+        # 2. 私聊里愿意多讲几句是自我披露，慢慢加；
+        # 3. 被攻击会掉，一次抵两天。
+        cap_t = max(0.0, float(num_or(self.trust_cap_day, 1.5)))
+        spent = num_or(prof.get("T_today"), 0.0)
+        delta_t = 0.0
+        if prof.get("T_day") != today:
+            prof["T_day"] = today
+            prof["T_today"] = 0.0
+            spent = 0.0
+            if scene == "private":
+                prev_days = int(num_or(prof.get("T_days"), 0))
+                prof["T_days"] = prev_days + 1
+                if prev_days >= 1:
+                    delta_t += min(self.trust_day_gain, max(0.0, cap_t - spent))
+        if (not negative) and scene == "private" and _worth_remembering(text, []):
+            delta_t += min(self.trust_share_gain, max(0.0, cap_t - spent - delta_t))
+        if negative:
+            delta_t -= min(self.trust_penalty, max(0.0, cap_t + spent))
+        if delta_t:
+            prof["T_today"] = round(spent + delta_t, 2)
+            base_t = clamp100(num_or(prof.get("T"), self.trust))
+            prof["T"] = round(max(0.0, min(100.0, base_t + delta_t)), 2)
+
+        if (
+            scene == "private"
+            and not SENSITIVE.search(text)
+            and _worth_remembering(text, prof.get("recent") or [])
+        ):
             prof.setdefault("recent", []).append(text[:60])
             prof["recent"] = prof["recent"][-20:]
         prof["last_seen"] = int(time.time())
