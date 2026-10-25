@@ -1,7 +1,7 @@
 name: astrbot_plugin_persona_mind
 display_name: 人格认知引擎
-desc: 人格认知引擎：八动作 × 七口吻、core/scene 双层 PAD、情景推断、关系势场与本地知识/语料。1.2.0。
-version: 1.2.0
+desc: 给她一份「当下的人格」：先判断这句话意味着什么，再更新双层 PAD 情绪与关系势场，用八动作 × 七口吻决定怎么回，并带上本地知识、语料与日记；不接管主模型输出，失败自动降级。
+version: 1.2.1
 author: nidie110
 repo: https://github.com/nidie110/astrbot_plugin_persona_mind
 astrbot_version: ">=4.11.0"
@@ -18,3 +18,4 @@ help: |
   /mind kb 关键词 检索知识库
   /mind toggle 一键开关（对比用）
   /mind diary [今天|昨天|YYYY-MM-DD] 手动写/补写日记
+  日记默认每天 22:40 自动写（diary_at 可改），当天没素材就跳过
