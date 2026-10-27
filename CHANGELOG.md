@@ -1,4 +1,71 @@
+## 1.3.6 — 2026-10-26
+
+- **调用格式改成按需注入**：新增 `engine/specs.py`（13 个动作的格式单一真相源，含信号表、优先级、tier）、`engine/selector.py`（按他的话挑 0–2 个动作）、`engine/inject.py`（按 guide > caps > format 整块裁剪，妈妈纸条不参与预算）。人格里只留「什么时候动手」，不再写 `feiyu(...)`。
+- 体积：每轮拼装从 1523（普通）/ 1806（管理员，且被硬切到 1300）降到 976 / 1208；不再出现「按字符切一半行」。
+- **修 B1 静默清零**：`_data_root()` 之前返回 `parents[2]/data/plugin_data`（多拼了一层 `data`，路径根本不存在），导致能力句、妈妈纸条、能力信念三样全部读空且不打日志。现在返回 `parents[2]/plugin_data`，读不到会 WARN。
+- **修 B2 规范漂移**：1.3.5 的 `apispec.py` 给「发说说」写了 `visibility=`，而 `feiyu` 签名里没有这个参数，管理员照着发必 TypeError。格式收进 `specs.py` 后，`_check_actions()` 会拿 form 里的 kwarg 和工具签名逐字比对，对不上就报错。
+- `_check_actions()` 扩到五查：参数映射↔注册表、规范↔映射、规范里的参数名↔工具签名、能力句档位↔真实权限。
+- 新增 `@filter.on_llm_response()` 承诺追踪：说了「我这就去」但这一轮没调 `feiyu` 时打一行 `[mind] 承诺未兑现`，并把那个动作的格式连同压力递给下一轮。
+- `feiyu` 的说明从 877 字压到约 250 字：只留「有哪些动作」，每个动作怎么填由按需注入给。
+- 能力块日志不再静默：`[mind] 能力块 caps=N guide=N format=N mom=N total=N admin=N pick=… drop=…`，每轮无条件打。
+- system_prompt 追加改成幂等（同一 block 不会拼两遍）。
+- `feiyu_comment` 的能力句档位由 `all` 改成 `admin`（它实际只对主人开放）。
+- 人格里那一段从 1365 字换成 651 字的「什么时候动手」，脚本换成 `tools/patch_persona_trigger.py`（--show / --go / --strip，写前自动备份 db）。
+- 8 个 `feiyu_*` 插件的 README 各加一节「人格设定里要写什么」（都指向本文件）。
+
+## 1.3.5 — 2026-10-26
+
+- 用法与调用格式现在**写进 AstrBot 的人格本身**（WebUI 那张人格卡片里能看到），不再只靠运行时往 system prompt 里拼。
+- 运行时默认关掉 `tool_guide_enable` / `api_spec_enable`（避免同一段话拼两遍）；人格里没有这段时可以把它们再打开。
+- 人格里的这一段按标记幂等更新，脚本是 `_persona_abilities.py`（写 / --show / --strip）。
+- 段首加了「不外露」规则：不念格式、不解释、不提工具/参数/动作/插件/action，也别展示尖括号占位符；被问就说「我去看了」再讲结果。
+
+## 1.3.4 — 2026-10-26
+
+- **调用规范写进人格提示**：新增 `engine/apispec.py`，每轮把 8~11 行「照抄就能调」的格式塞进她的自述（按「给链接 / 给一句话 / 发出去 / 问妈妈」分组，值一律用 `<尖括号>` 占位，避免她把示例当内容照发）。管理员会话才渲染发评论/发说说/改资料这几条。
+- 提示总量收口：能力句 + 判断口径 + 调用格式 + 妈妈纸条拼装后上限 1300 字，每轮日志打出 `[mind] 能力块 N 字`；新增 `api_spec_enable` 开关。
+- 修：`发说说` 之前永远「仅自己可见」（`visibility` 没从他的话里取）；发评论缺链接兜底（把链接写在 `text` 里也能用）；问妈妈 `question`/`context` 在只给 `text` 时会被塞成同一句。
+- 修：未知动作不再把动词清单念给用户看（只进日志）。
+- 修：`_capability_items` 也走 `_data_root()`（换启动目录不再写不进自我信念）。
+- 启动期自检 `_check_actions()`：注册表 / `_FEIYU_ARGS` / handler 签名三处对不齐直接报错，不等模型选到才发现。
+- 顺手修 feiyu_browse 的 `page_do(action=open)` NameError、feiyu_draw 注册说明的参数名、两个插件配置文件的 BOM。
+
+## 1.3.3 — 2026-10-26
+
+- 人格提示里加「什么时候真的动手」：三问判定 + 能力真空时刻表 + 失败三层话术（不再出现通道/接口/报错这类词）
+- 去掉 system prompt 里的工具名清单（她容易顺着念工具名）
+- 修 `/mind toggle` 死代码；新增 terminate，热重载不再双跑日记循环
+- 妈妈留的纸条会拼进她的自述（30 天内有效）
+- 内置能力说明改为可配置：`tool_guide_enable`
+
+## 1.3.2 — 2026-10-26
+
+- **分条发送**：模型常把「说 2~3 条」写成一行，QQ 里就成一整块。新增 `on_decorating_result` 钩子，发送前按句末标点替她拆成多条（整段没有句号且超过 30 字才退到逗号切，2 字以内碎片并回上一条）。需要同时开 AstrBot 的 `platform_settings.segmented_reply`。
+- 配置新增 `split_bubbles` / `max_bubbles`（默认 3）/ `split_min_chars`（默认 8）；代码块、链接不拆。
+- 记忆清空不再影响人格：`persona.traits.json` 与知识库常识语料保留。
+
+## 1.3.1 — 2026-10-26
+
+- **知识库换成真向量模型**：本地 embedding 从「手搓字符 n-gram 哈希」换成 `bge-base-zh-v1.5`（quantized ONNX，768 维，CLS pooling + L2 归一化），`tools/feiyu_embed_server.py` 只换了内部实现，对外仍是 OpenAI 兼容的 `/v1/embeddings`。两个库（大肥鱼常识 / 大肥鱼日记）已删库重建，常识 7 篇 37 块、日记 3 篇 4 块。
+- **小鲸鱼的日记联进来了**：新增 `engine/whale.py`，把 `~/.dsh/worlds/default/diary/*.md` 按内容哈希增量同步进「小鲸鱼日记」知识库（文档名前缀 `小鲸鱼-`）。聊到相关话题时她最多提一条，并明确说「小鲸鱼说过」，不冒充自己看过；有 45 分钟冷却、词面闸门（同一 BV 或至少两个词重合）。
+- **自己的日记也会自动入库**：写完日记后增量上传，远端库不会再「用旧的 3 篇盖住新写的」。
+- 配置新增 5 项：`whale_enable`、`whale_dir`、`whale_kb`、`whale_sync_minutes`、`whale_cooldown_minutes`。
+- 修：知识库后端初始化时 `kb_manager` 还没装载完就放弃同步的问题（现在会自己补一次 `load_kbs()`）。
+
 # 更新日志
+
+## 1.3.0 — 2026-10-26
+
+- **知识库可以挂 AstrBot 自带的向量库**：配置 `kb_backend` 选 `astrbot`（默认）或 `local`；`kb_name_knowledge` / `kb_name_diary` 填两个库的名字。自带库不可用（服务没起、维度不对、库被删）时自动退回本地检索，不会让她卡住。
+- **修了一个让常识永远进不来的 bug**：标签加分原来判的是「这段正文里有没有 tag」，而不是「你这句话有没有命中 tag」，结果带 tags 的日记在任何提问下都白拿加分、垄断前三名。现在改成命中 query 才算。
+- **偏好保留**：自带库返回的候选会按标签命中加分、日记 ×1.15 重新排序；日记日期仍从本地 `kb/diary/*.md` 的 frontmatter 读。
+- 默认注入门槛：先由本地检索判断「这轮值不值得注入」，避免自带库「必返回非空」把无关内容塞进提示词。
+
+
+## 1.2.4 — 2026-10-25
+
+- 新增唯一入口工具 `feiyu(action, target, text, question)`：她看到的工具从十几个机械步骤收敛成「看视频 / 搜 / 读网页 / 截图 / 发评论 / 认人 / 说 / 画 / 改昵称 / 改签名 / 改性别 / 发说说」这些动词，结果直接回到她的上下文里。
+- 动作由各插件在自己的 `__init__` 里用 `kit.register_action()` 登记，跨插件共享同一份注册表；kit 改成全进程一份（不再 `sys.modules.pop`）。
 
 ## 1.2.3 — 2026-10-25
 

@@ -43,7 +43,7 @@ from .intent import (
 from .claims import ClaimStore
 from .diary import Diary
 from .self_model import SelfModel
-from .knowledge import KnowledgeBase, chunk_text, parse_front_matter, tokens
+from .knowledge import KnowledgeBase, RemoteKB, chunk_text, parse_front_matter, tokens
 from .profiles import ProfileStore, empty, summary_line
 from .prompts import render, feel_line
 from .bridge import AffectionBridge
@@ -77,6 +77,7 @@ __all__ = [
     "Diary",
     "SelfModel",
     "KnowledgeBase",
+    "RemoteKB",
     "chunk_text",
     "parse_front_matter",
     "tokens",

@@ -54,6 +54,7 @@ def render(
     voice_lines: list[str],
     diary_hits: list[dict] | None = None,
     claims: list[str] | None = None,
+    whale_hits: list[dict] | None = None,
     beliefs: list[str] | None = None,
     scene: str,
     max_chars: int = 1200,
@@ -122,6 +123,17 @@ def render(
         for c in claims[:2]:
             lines.append("  · " + str(c).replace("\n", " ")[:140])
         lines.append("  （只有当前界面亲自经历的，才能说“我刚看过”；如果写着“听小鲸鱼说过”，就保留这个来源，不要冒充刚刚亲历。）")
+    if whale_hits:
+        # 那段日记是「另一个她」写的，措辞必须把来源说清楚，否则她会当成自己亲历
+        lines.append("- 小鲸鱼（住在桌面端的那个你）写下的东西——她不是你，那不是你的经历：")
+        for w in whale_hits[:1]:
+            day = w.get("date") or ""
+            body = (w.get("text") or "").replace("\n", " ")[:120]
+            lines.append(f"  · {day}：{body}")
+        lines.append(
+            "  （真跟眼前话题对得上，就用自己的话提一句“小鲸鱼说过”，别说“我刚看过/我收过”，"
+            "也别复述原文、别念日期；对不上就当没看见。）"
+        )
     if diary_hits:
         lines.append("- 你想起自己以前写过的：")
         for d in diary_hits[:2]:

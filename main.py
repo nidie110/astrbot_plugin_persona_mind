@@ -12,12 +12,31 @@ import asyncio
 import json
 import os
 import re
+import socket
+import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# ---- 共用件（全进程一份）----
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+kit = _sys.modules.get("_feiyu_kit")
+if kit is None:
+    # 动作注册表必须全进程共享：谁先加载谁就是那份，后来者直接复用。
+    # 磁盘上的 kit 改动要重启整个 AstrBot 进程才生效（面板重载插件不会换掉已加载的模块）。
+    import importlib.util as _ilu
+
+    _ks = _ilu.spec_from_file_location("_feiyu_kit", Path(__file__).resolve().parent / "_feiyu_kit.py")
+    kit = _ilu.module_from_spec(_ks)
+    _sys.modules["_feiyu_kit"] = kit
+    _ks.loader.exec_module(kit)
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import Plain
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
@@ -27,6 +46,7 @@ except Exception:  # pragma: no cover
     TextPart = None  # type: ignore[assignment]
 
 from .engine import (
+    whale as whale_mod,
     Affect,
     Mood,
     base_from_field,
@@ -36,6 +56,7 @@ from .engine import (
     ClaimStore,
     SelfModel,
     KnowledgeBase,
+    RemoteKB,
     parse_front_matter,
     ProfileStore,
     THINK_PROMPT,
@@ -73,6 +94,8 @@ VOICE_GROUP = {
 
 PLUGIN_NAME = "astrbot_plugin_persona_mind"
 
+NL = chr(10)
+
 DEFAULTS = {
     "enable": True,
     "field_enable": True,
@@ -85,6 +108,21 @@ DEFAULTS = {
     "profile_enable": True,
     "summarize_every": 20,
     "kb_enable": True,
+    "kb_backend": "astrbot",
+    "kb_name_knowledge": "大肥鱼常识",
+    "kb_name_diary": "大肥鱼日记",
+    # 小鲸鱼（桌面端那个她）的日记：同步进单独一个库，提的时候要说清来源
+    "whale_enable": True,
+    "tool_guide_enable": False,
+    "api_spec_enable": True,
+    "whale_dir": "~/.dsh/worlds/default/diary",
+    "whale_kb": "小鲸鱼日记",
+    "whale_sync_minutes": 30,
+    "whale_cooldown_minutes": 45,
+    # 分条发送：模型常把「说几条」写成一行，这里按句读替她拆
+    "split_bubbles": True,
+    "max_bubbles": 3,
+    "split_min_chars": 8,
     "voice_enable": True,
     "affection_bridge": True,
     "extra_kb_files": [],
@@ -183,6 +221,37 @@ KB_TEMPLATE = """# 知识库示例
 """
 
 
+_QZONE_VIS = (
+    ("所有人可见", "public"),
+    ("公开", "public"),
+    ("好友可见", "friends"),
+    ("仅自己", "private"),
+)
+
+
+def _first_url(s: str) -> str:
+    """从一句话里捞链接：http(s) 优先，其次 BV 号。捞不到返回空串。"""
+    m = re.search(r"https?://[^\s，。；、）)]+", s or "")
+    if m:
+        return m.group(0).rstrip("，。；、,.!?")
+    m = re.search(r"BV[0-9A-Za-z]{10}", s or "")
+    if m:
+        return "https://www.bilibili.com/video/" + m.group(0)
+    return ""
+
+
+def _qzone_args(t: str, x: str) -> dict:
+    """说说正文 + 可见范围：他嘴上说「公开/好友可见」才算，默认仅自己可见。"""
+    body = (x or t or "").strip()
+    vis = "private"
+    for kw, v in _QZONE_VIS:
+        if kw in body:
+            vis = v
+            body = body.replace(kw, "").strip(" ，,。.:：")
+            break
+    return {"content": body, "visibility": vis}
+
+
 @register(
     PLUGIN_NAME,
     "内心引擎",
@@ -255,6 +324,31 @@ class MindEngine(Star):
                 self.kb.load()
             except Exception as e:
                 logger.warning(f"[mind] 知识库加载失败: {e}")
+
+        # 知识库后端：astrbot = AstrBot 自带的向量库；local = 老的字二元组检索
+        self.remote_kb: RemoteKB | None = None
+        if str(self.cfg.get("kb_backend") or "astrbot").lower() == "astrbot":
+            try:
+                mgr = getattr(self.context, "kb_manager", None)
+                if mgr is None:
+                    logger.warning("[mind] 没拿到 kb_manager，知识库退回本地检索")
+                else:
+                    self.remote_kb = RemoteKB(
+                        mgr.retrieve,
+                        str(self.cfg.get("kb_name_knowledge") or "大肥鱼常识"),
+                        str(self.cfg.get("kb_name_diary") or "大肥鱼日记"),
+                        local=self.kb,
+                        kb_whale=str(self.cfg.get("whale_kb") or "小鲸鱼日记"),
+                    )
+                    logger.info(
+                        "[mind] 知识库后端：AstrBot 自带（%s / %s）"
+                        % (
+                            self.cfg.get("kb_name_knowledge") or "大肥鱼常识",
+                            self.cfg.get("kb_name_diary") or "大肥鱼日记",
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"[mind] 接管 AstrBot 知识库失败，退回本地检索: {e}")
 
         voice_path = self.dir / "kb" / "voice.md"
         self.voice = VoiceCorpus(voice_path)
@@ -556,12 +650,455 @@ class MindEngine(Star):
         self.__dict__["_last_cost"] = {}
         self._record_chat_material(msg, str(getattr(event, "unified_msg_origin", "") or ""))
         try:
+            self._settle_own_doings(str(getattr(event, "unified_msg_origin", "") or ""))
+        except Exception as e:
+            self._record_failure("own_doings", e)
+        try:
+            block = self._ability_block(event, msg)
+            # 幂等：同一个 req 被处理两次也不会拼两遍（1.3.5 是裸追加）
+            if block and block not in (req.system_prompt or ""):
+                req.system_prompt = ((req.system_prompt or "") + NL + NL + block).strip()
+        except Exception as e:
+            self._record_failure("abilities", e)
+        try:
             await self._inject(event, req, uid, msg)
             self._record_success("inject")
         except Exception as e:
             self._record_failure("inject", e)
         finally:
             self._inflight.discard(uid)
+
+    @filter.on_llm_response()
+    async def after_llm(self, event: AstrMessageEvent, resp) -> None:
+        """记下「说了要做却没动手」，下一轮把那个动词的格式连同压力一起递过去。
+
+        这是冲着主病去的：6 天 1089 回合里，19/20 的「我去看看 / 我搜搜」都是纯口头承诺。
+        不硬拦回复（拦了语气会变怪，而且真话和客套难分），只做两件事：
+        把落空的动词标成 promise 交给下一轮，并在日志里记一笔，好统计落空率。
+        """
+        if not self.cfg.get("api_spec_enable", True):
+            return
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "")
+            state = self._spec_state(umo)
+            called = {str(x) for x in (getattr(resp, "tools_call_name", None) or [])}
+            if "feiyu" in called:
+                state["verbs"] = []
+                state["promise"] = ""
+                return
+            verbs = list(state.get("verbs") or [])
+            if not verbs:
+                return
+            text = str(getattr(resp, "completion_text", "") or "")
+            if not self._PROMISE_RE.search(text):
+                return
+            state["promise"] = verbs[0]
+            logger.info(f"[mind] 承诺未兑现：说了要做「{verbs[0]}」但这一轮没有动手")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mind] 承诺追踪没跑起来：{e}")
+
+    # ---------------- 她自己的手：唯一任务级入口 ----------------
+
+    _FEIYU_ARGS = {
+        "看视频": lambda t, x, q: {"video_ref": t or x, "question": q},
+        "认人": lambda t, x, q: {},
+        "搜": lambda t, x, q: {"query": t or x},
+        "读网页": lambda t, x, q: {"url": t or x},
+        "截图": lambda t, x, q: {"url": t or x},
+        "发评论": lambda t, x, q: {"url": t or _first_url(x), "text": x},
+        "读评论": lambda t, x, q: {"url": t or _first_url(x)},
+        "说": lambda t, x, q: {"text": x or t},
+        "画": lambda t, x, q: {"prompt": x or t},
+        "问妈妈": lambda t, x, q: {"question": q or x or t, "context": x if q else ""},
+        "改签名": lambda t, x, q: {"text": x or t},
+        "改昵称": lambda t, x, q: {"nickname": x or t},
+        "改性别": lambda t, x, q: {"gender": x or t},
+        "发说说": lambda t, x, q: _qzone_args(t, x),
+    }
+
+    # ---------- 分条发送 ----------
+
+    _SPLIT_TAIL = re.compile(r"[，,、；;：:\s]+$")
+
+    _SPLIT_STRONG = re.compile(r"(?<=[。！？!?~…])")
+
+    def _split_for_chat(self, text: str, limit: int = 3) -> list[str]:
+        """按句读切成几条：换行先分段，段内再按句末标点；整段没有句号且够长时，才退到逗号切。"""
+        t = (text or "").strip()
+        if not t:
+            return []
+        # 她自己敲的换行就是分条的意思，先按行切，别等句号
+        segs: list[str] = []
+        for line in re.split(r"\n+", t):
+            line = line.strip()
+            if not line:
+                continue
+            sub = [x for x in self._SPLIT_STRONG.split(line) if x.strip()]
+            if len(sub) <= 1 and len(line) > 30:
+                # 一口气写了一大段不给句号，才动用逗号；否则「趴着，听风扇」会被切碎
+                sub = [x for x in re.split(r"(?<=[，,])", line) if x.strip()]
+            segs.extend(sub)
+        if len(segs) > limit:
+            segs = segs[: limit - 1] + ["\n".join(segs[limit - 1:])]
+        out: list[str] = []
+        for seg in segs:
+            raw = seg.strip()
+            seg = self._SPLIT_TAIL.sub("", raw)
+            if not seg:
+                continue
+            # 2 个字以下的碎片并回上一条；但「在呢。」这种成句的短句保持独立
+            if out and len(seg) <= 2 and not raw.endswith(("。", "！", "？", "!", "?")):
+                out[-1] = out[-1] + "，" + seg
+            else:
+                out.append(seg)
+        return out
+
+    @filter.on_decorating_result()
+    async def split_into_bubbles(self, event: AstrMessageEvent) -> None:
+        """模型经常把「说 N 条」写成一行；这里按句读替她拆成多个气泡。"""
+        if not self.cfg.get("split_bubbles", True):
+            return
+        try:
+            result = event.get_result()
+            if result is None or not result.is_model_result():
+                return
+            chain = list(result.chain or [])
+            plains = [c for c in chain if isinstance(c, Plain)]
+            if len(plains) != 1:
+                return
+            text = plains[0].text or ""
+            if len(text) < self._int_cfg("split_min_chars", 8):
+                return
+            if "```" in text or "http://" in text or "https://" in text:
+                return
+            parts = self._split_for_chat(
+                text, max(2, min(4, self._int_cfg("max_bubbles", 3))))
+            if len(parts) <= 1:
+                return
+            rebuilt = []
+            for comp in chain:
+                if comp is plains[0]:
+                    rebuilt.extend(Plain(p) for p in parts)
+                else:
+                    rebuilt.append(comp)
+            result.chain = rebuilt
+            logger.info(f"[mind] 分条发送 {len(parts)} 条：{parts}")
+        except Exception as e:
+            logger.warning(f"[mind] 分条失败（用原回复）: {e}")
+
+    @filter.llm_tool(name="feiyu")
+    async def feiyu(self, event: AstrMessageEvent, action: str, target: str = "", text: str = "", question: str = "") -> str:
+        """你自己的手：真的去做一件事，而不是嘴上说做。一次只挑一个动作，做完用结果说话。
+
+        这里是「有哪些动作」；每个动作具体怎么填，需要动手的那一轮会有人告诉你。
+        做不到、没做成，都如实说，别编结果。
+
+        Args:
+            action(string): 动作名，取值：搜 / 看视频 / 读网页 / 截图 / 说 / 画 / 认人 / 发评论 / 读评论 / 问妈妈 / 改昵称 / 改签名 / 改性别 / 发说说
+            target(string): 目标——检索词、链接或本地路径（看视频、搜、读网页、截图、发评论、读评论时填）
+            text(string): 内容——要说的话、画面描述、评论正文、新昵称或签名（说、画、发评论、改资料时填）
+            question(string): 想特别问清什么（看视频时想看清某处，或问妈妈时要问的那句）
+        """
+        key = (action or "").strip()
+        handler = kit.get_action(key)
+        if handler is None:
+            logger.warning(f"[mind] 未知动作：{key!r}（会的是：{kit.action_help()}）")
+            return "这个我现在做不了，如实告诉他就行。"
+        build = self._FEIYU_ARGS.get(key)
+        if build is None:
+            return f"「{key}」还不会用。"
+        kwargs = build((target or "").strip(), (text or "").strip(), (question or "").strip())
+        try:
+            out = await handler(event, **kwargs)
+        except Exception as e:
+            logger.warning(f"[persona_mind] 动作 {key} 失败: {e}")
+            return f"做「{key}」的时候出错了（{type(e).__name__}），如实说没做成，别编结果。"
+        return str(out or "").strip() or "做完了，但没什么可说的。"
+
+    def _mom_note(self) -> str:
+        """妈妈递过来的纸条（feiyu_mom 写的 briefing.json）——7 天内有效，每天只塞一次。"""
+        import json as _json
+        import time as _time
+
+        today = _time.strftime("%Y-%m-%d")
+        if self.__dict__.get("_note_day") == today:
+            return ""
+        path = self._data_root() / "astrbot_plugin_feiyu_mom" / "briefing.json"
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        try:
+            text = str(data.get("text") or "").strip()
+            ts = float(data.get("ts") or 0)
+        except Exception:
+            return ""
+        if not text or _time.time() - ts > 7 * 86400:
+            return ""
+        self.__dict__["_note_day"] = today
+        return text[:600]
+
+    @staticmethod
+    def _data_root() -> Path:
+        """插件自己的 data/plugin_data，基于文件位置而不是进程 CWD（换启动目录也不会丢）。
+
+        parents[2] 已经是 `<AstrBot>/data`，别再拼一层 "data"——1.3.5 之前多拼过一次，
+        结果 `_feiyu_caps.json`、妈妈纸条、能力信念三样全部静默读空，日志里一个字都没有。
+        """
+        return Path(__file__).resolve().parents[2] / "plugin_data"
+
+    # ---------- 每轮拼进自述的那一段 ----------
+
+    _URL_RE = re.compile(r"https?://[^\s，。！？]+|BV[0-9A-Za-z]{10}")
+    _PROMISE_RE = re.compile(
+        r"我(?:这就|马上去|先去看|先去搜|去问问|去查|去帮你|去看看)|等我一下"
+    )
+    _SPEC_STATE_MAX = 200
+
+    def _spec_state(self, umo: str) -> dict:
+        """每个会话一份「上一轮注入过什么动词」——粘性和承诺追踪都靠它。"""
+        store = self.__dict__.setdefault("_spec_state_map", {})
+        if umo not in store and len(store) >= self._SPEC_STATE_MAX:
+            for k in list(store)[: len(store) - self._SPEC_STATE_MAX + 1]:
+                store.pop(k, None)
+        return store.setdefault(umo, {"verbs": [], "promise": ""})
+
+    def _has_target(self, event, msg: str) -> bool:
+        """这一轮有没有具体目标（链接 / BV / 图 / 视频）——弱信号要有目标才认。"""
+        if self._URL_RE.search(msg or ""):
+            return True
+        try:
+            for comp in getattr(event.message_obj, "message", None) or ():
+                if type(comp).__name__ in ("Image", "Video", "File", "Record"):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _caps_lines(self, admin: bool) -> list[str]:
+        """读各插件登记的能力句子。读不到要说出来，别静默变成零条。"""
+        import json as _json
+
+        path = self._data_root() / "_feiyu_caps.json"
+        if not path.exists():
+            logger.warning(f"[mind] 能力清单文件不在：{path}")
+            return []
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mind] 能力清单读不动（{path}）：{e}")
+            return []
+        out = []
+        for item in (data or {}).values():
+            if not isinstance(item, dict):
+                continue
+            if item.get("tier") == "admin" and not admin:
+                continue
+            text = str(item.get("sentence") or "").strip()
+            if text:
+                out.append("- " + text)
+        return out
+
+    def _is_owner(self, event) -> bool:
+        """该不该按「主人」档位对待她这一轮看到的东西。
+
+        不能只看 `event.is_admin()`：AstrBot 在私聊里对好友消息常返回 False
+        （`platform_settings.wl_ignore_admin_on_friend` 默认 True）。实测主人私聊发
+        「看看这个 BV…」时日志是 `admin=0` —— 能力句少一截、发评论这类动作的格式
+        永远不给，正好是**最该拿到**的场景拿不到。所以再对一遍 admins_id / owner_ids。
+        """
+        try:
+            if event.is_admin():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            sid = str(event.get_sender_id() or "").strip()
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(sid) and sid in self._owner_ids()
+
+    def _owner_ids(self) -> set[str]:
+        """配置里的 owner_ids + AstrBot 全局 admins_id，取并集，读一次缓存住。"""
+        cached = self.__dict__.get("_owner_ids_cache")
+        if cached is not None:
+            return cached
+        ids: set[str] = set()
+        raw = self.cfg.get("owner_ids") or []
+        if isinstance(raw, str):
+            raw = raw.replace("，", ",").split(",")
+        for item in raw:
+            s = str(item).strip()
+            if s:
+                ids.add(s)
+        try:
+            p = self._data_root().parent / "cmd_config.json"
+            if p.exists():
+                import json as _json  # noqa: PLC0415
+
+                conf = _json.loads(p.read_text(encoding="utf-8-sig"))
+                for item in conf.get("admins_id") or []:
+                    s = str(item).strip()
+                    if s:
+                        ids.add(s)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mind] 读 admins_id 失败（只影响主人档位判断）：{e}")
+        self.__dict__["_owner_ids_cache"] = ids
+        return ids
+
+    def _ability_block(self, event, msg: str = "") -> str:
+        """能力自述 + 判断口径（常驻）+ 调用格式（按需）+ 妈妈纸条。
+
+        为什么格式要按需：13 个动词的格式全塞进来，管理员会话实测 1806 字，超出预算后
+        1.3.5 是按字符硬切的 —— 切点常常落在一行规范中间，半行比没有更危险，她会照抄半句。
+        而这一轮真正用得上的动词最多一个。
+        判断口径（toolguide）必须常驻：它教的是「什么时候该动手」，一旦按需化就退化成短语清单，
+        历史字面命中率 1/7，那个坑走过一次。
+        """
+        from .engine import inject as inject_mod  # noqa: PLC0415
+        from .engine import selector  # noqa: PLC0415
+        from .engine import specs as spec_mod  # noqa: PLC0415
+
+        try:
+            admin = self._is_owner(event)
+        except Exception:  # noqa: BLE001
+            admin = False
+
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        state = self._spec_state(umo)
+        parts: dict[str, str] = {}
+
+        lines = self._caps_lines(admin)
+        if lines:
+            parts["caps"] = (
+                "你手上确实有这些本事（都是你自己的，直接用，别解释自己怎么做到的）："
+                + NL + NL.join(lines)
+            )
+
+        if self.cfg.get("tool_guide_enable", True):
+            try:
+                from .engine import toolguide as tg  # noqa: PLC0415
+
+                parts["guide"] = tg.render()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[mind] 用法说明没拼上：{e}")
+
+        hit: list[str] = []
+        if self.cfg.get("api_spec_enable", True):
+            known = set(kit.ACTIONS or {})
+            try:
+                hit = selector.pick(
+                    msg,
+                    admin=admin,
+                    available=known,
+                    stick=state.get("verbs") or (),
+                    promise=str(state.get("promise") or ""),
+                    has_target=self._has_target(event, msg),
+                )
+                if hit:
+                    parts["format"] = spec_mod.render_for(hit, available=known)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[mind] 调用格式没拼上：{e}")
+                hit = []
+
+        note = self._mom_note()
+        if note:
+            parts["mom"] = "妈妈前阵子给你留过一段话，照它做就行：" + NL + note
+
+        block, dropped = inject_mod.build(parts, admin=admin)
+
+        state["verbs"] = hit
+        state["promise"] = ""
+        logger.info(
+            "[mind] 能力块 %s total=%d admin=%d pick=%s drop=%s"
+            % (
+                inject_mod.summarize(parts),
+                len(block),
+                int(admin),
+                ",".join(hit) or "-",
+                ",".join(dropped) or "-",
+            )
+        )
+        return block
+
+    # ---------- 她自己的本事与心情 ----------
+
+    def _capability_items(self) -> list[str]:
+        import json as _json
+
+        path = self._data_root() / "_feiyu_caps.json"
+        if not path.exists():
+            return []
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        out = []
+        for item in (data or {}).values():
+            if not isinstance(item, dict) or item.get("tier") != "all":
+                continue
+            text = str(item.get("sentence") or "").strip()
+            if text:
+                out.append(text)
+        return out
+
+    def _sync_capabilities(self) -> None:
+        """每天一次，把「我会什么」写进自我信念；admin 档不写（那是全局档案）。"""
+        day = time.strftime("%Y-%m-%d", time.localtime())
+        if self.__dict__.get("_caps_day") == day:
+            return
+        self.__dict__["_caps_day"] = day
+        for text in self._capability_items():
+            try:
+                self.self_model.remember_ability(text)
+            except Exception as e:
+                self._record_failure("ability_belief", e)
+
+    def _settle_own_doings(self, umo: str = "") -> None:
+        """把各插件排队的情绪冲量结算掉：她做过的事，会真的影响她的心情。
+
+        冲量由 kit.record_mood 落盘（她看过什么、发过什么），这里统一衰减后合并，
+        避免一条消息里连打十几次 apply 把情绪顶穿。
+        """
+        import json as _json
+
+        self._sync_capabilities()
+        path = Path("data/plugin_data/_feiyu_mood.jsonl")
+        if not path.exists():
+            return
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        try:
+            path.unlink()
+        except OSError:
+            return
+        total = {}
+        for line in lines[-20:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = _json.loads(line)
+            except Exception:
+                continue
+            eff = row.get("effects")
+            if not isinstance(eff, dict):
+                continue
+            for k in ("P", "Ar", "D"):
+                try:
+                    total[k] = total.get(k, 0.0) + float(eff.get(k, 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+        merged = {k: max(-8.0, min(8.0, v)) for k, v in total.items() if abs(v) > 1e-9}
+        if not merged:
+            return
+        try:
+            self.mood.apply(merged, umo=str(umo or ""), clamp=6.0)
+            logger.debug(f"[mind] 她自己的事带动情绪 {merged}")
+        except Exception as e:
+            self._record_failure("own_mood", e)
 
     def _int_cfg(self, key: str, default: int = 0) -> int:
         """读整数配置；缺失/脏值回落默认值（不用 or，避免 0 被当成空）。"""
@@ -704,8 +1241,106 @@ class MindEngine(Star):
 
     _DIARY_TICK_SECONDS = 45  # 45 秒醒一次：够准，又不至于空转
 
+    async def terminate(self) -> None:
+        """热重载/禁用时停掉后台循环。
+
+        AstrBot 只认类自身定义的 terminate（star_manager 里查 __dict__），
+        没有它旧实例的 _diary_loop 会一直跑：重载一次多一份写日记、多一份传知识库。
+        """
+        self.__dict__["_stopped"] = True
+        for name in ("_diary_loop_task", "_diary_task", "_whale_task"):
+            task = getattr(self, name, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.gather(task, return_exceptions=True)
+                except Exception:
+                    pass
+        logger.info("[mind] 已停止后台循环")
+
+    async def _check_actions_later(self) -> None:
+        """等所有插件加载完再自检：加载顺序不定，早跑会把还没注册的动词误报成问题。"""
+        if self.__dict__.get("_actions_checked"):
+            return
+        try:
+            await asyncio.sleep(20)
+            self.__dict__["_actions_checked"] = True
+            self._check_actions()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mind] 动作自检没跑起来：{e}")
+
+    def _check_actions(self) -> None:
+        """启动期自检：注册表、参数映射、规范文本三处对不齐就报错，别等模型选到才发现。
+
+        为什么要查规范文本：1.3.5 的 apispec 曾给「发说说」写过 `visibility=`，
+        而 feiyu 的签名里只有 action/target/text/question —— 管理员照着规范发，必 TypeError。
+        这种错「跑得通、看不出来」，只能靠静态比对抓。
+        """
+        import inspect
+
+        from .engine import specs as spec_mod  # noqa: PLC0415
+
+        problems: list[str] = []
+        for key, build in self._FEIYU_ARGS.items():
+            handler = kit.get_action(key)
+            if handler is None:
+                problems.append(f"{key}：注册表里没有")
+                continue
+            try:
+                kwargs = build("<target>", "<text>", "<question>")
+                inspect.signature(handler).bind(None, **kwargs)
+            except TypeError as e:
+                problems.append(f"{key}：参数对不上（{e}）")
+            except Exception as e:  # noqa: BLE001
+                problems.append(f"{key}：映射炸了（{e}）")
+        for key in kit.ACTIONS:
+            if key not in self._FEIYU_ARGS:
+                problems.append(f"{key}：注册了但没有参数映射")
+
+        # 规范文本 × 工具签名：form 里出现的每个 kwarg 都必须是 feiyu 真有的参数
+        allowed = {"action", "target", "text", "question"}
+        for verb, spec in spec_mod.SPECS.items():
+            if verb not in self._FEIYU_ARGS:
+                problems.append(f"规范有「{verb}」但参数映射没有（模型会照着一个走不通的格式调）")
+            extra = spec_mod.form_params(spec.form) - allowed
+            if extra:
+                problems.append(f"「{verb}」的规范用了不存在的参数：{'/'.join(sorted(extra))}")
+        for key in self._FEIYU_ARGS:
+            if key not in spec_mod.SPECS:
+                problems.append(f"「{key}」没写调用规范（模型知道有这个动作，但不知道参数怎么填）")
+
+        # 能力句的档位要和规范一致，否则普通用户会被暗示一项她做不了的事
+        try:
+            import json as _json  # noqa: PLC0415
+
+            cap_path = self._data_root() / "_feiyu_caps.json"
+            caps = _json.loads(cap_path.read_text(encoding="utf-8")) if cap_path.exists() else {}
+        except Exception:  # noqa: BLE001
+            caps = {}
+        want_tier = {"feiyu_qzone": "admin", "feiyu_comment": "admin"}
+        for name, tier in want_tier.items():
+            item = (caps or {}).get(name) or {}
+            if item and item.get("tier") != tier:
+                problems.append(f"能力句 {name} 的档位是 {item.get('tier')!r}，应为 {tier!r}")
+
+        if problems:
+            for p in problems:
+                logger.warning(f"[mind] 动作没接上：{p}（多半是对应插件被禁用了，不影响其它动作）")
+            logger.info(
+                f"[mind] 动作自检：{len(self._FEIYU_ARGS)} 个动作，可用 {len(kit.ACTIONS)} 个，"
+                f"{len(problems)} 条提示（见上面的警告）"
+            )
+        else:
+            logger.info(
+                f"[mind] 动作自检通过（{len(self._FEIYU_ARGS)} 个动作，0 漂移，"
+                f"可用 {len(kit.ACTIONS)} 个）"
+            )
+
     async def initialize(self) -> None:
         """AstrBot 插件加载钩子：起后台任务，每天 diary_at 写当天日记。"""
+        asyncio.create_task(self._check_actions_later())
         if not self.cfg.get("diary_enable", True):
             return
         if self.__dict__.get("_diary_loop_task") is not None:
@@ -735,6 +1370,8 @@ class MindEngine(Star):
     async def _diary_loop(self) -> None:
         """常驻循环：到点写今天的日记，顺手补上漏掉的几天。"""
         while True:
+            if self.__dict__.get("_stopped"):
+                return
             try:
                 await asyncio.sleep(self._DIARY_TICK_SECONDS)
                 await self._diary_tick()
@@ -743,7 +1380,232 @@ class MindEngine(Star):
             except Exception as e:  # 定时器绝不能把自己搞死
                 logger.debug(f"[mind] 日记定时器异常: {type(e).__name__}: {e}")
 
+    # ---------- 小鲸鱼的日记 ----------
+
+    def _whale_dir(self) -> str:
+        raw = str(self.cfg.get("whale_dir") or "~/.dsh/worlds/default/diary")
+        return str(Path(raw).expanduser())
+
+    async def _whale_hits(self, umo: str, msg: str) -> list[dict]:
+        """有冷却、有来源标注的一条；拿不到或对不上就干脆不给。"""
+        if self.remote_kb is None:
+            return []
+        now = time.time()
+        cool = max(1, self._int_cfg("whale_cooldown_minutes", 45)) * 60
+        last = self.__dict__.setdefault("_whale_last", {})
+        if now - float(last.get(umo, 0.0)) < cool:
+            return []
+        hits = await self.remote_kb.query_whale(msg, k=1)
+        if not hits:
+            return []
+        last[umo] = now
+        if len(last) > 300:
+            for k in list(last)[: len(last) - 250]:
+                last.pop(k, None)
+        return hits
+
+    async def _sync_own_diary(self) -> None:
+        """她自己的日记也要进远端库，否则远端那 3 篇会把新日记盖在后面。"""
+        days = await self._sync_kb_dir(
+            kb_name=str(self.cfg.get("kb_name_diary") or "大肥鱼日记"),
+            directory=str(self.dir / "kb" / "diary"),
+            prefix="",
+            sha_key="_own_sha",
+            at_key="_own_at",
+            gap_minutes=int(self._int_cfg("whale_sync_minutes", 30)),
+        )
+        if days:
+            logger.info(f"[mind] 日记入库 {days} 篇 → {self.cfg.get('kb_name_diary')}")
+
+    async def _sync_kb_dir(self, kb_name, directory, prefix, sha_key, at_key, gap_minutes=30) -> int:
+        """把一个目录里的 md 增量同步进某个知识库（内容哈希变了才重传）。"""
+        now = time.time()
+        if now - float(self.__dict__.get(at_key, 0.0)) < max(5, gap_minutes) * 60:
+            return 0
+        root = Path(directory).expanduser()
+        if not root.is_dir():
+            return 0
+        mgr = getattr(self.context, "kb_manager", None)
+        if mgr is None:
+            return 0
+        # 入库前先确保向量服务活着：它不在时上传必然失败，而这条路径以前不经过 _ensure_embed
+        self._ensure_embed()
+        helper = await mgr.get_kb_by_name(kb_name)
+        if helper is None:
+            try:
+                await mgr.load_kbs()
+            except Exception:
+                pass
+            helper = await mgr.get_kb_by_name(kb_name)
+        if helper is None:
+            return 0
+        known = self.__dict__.setdefault(sha_key, {})
+        todo = []
+        for fp in sorted(root.glob("*.md")):
+            try:
+                text = fp.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not text.strip():
+                continue
+            digest = whale_mod.sha(text)
+            if known.get(fp.name) == digest:
+                continue
+            todo.append((fp.name, text, digest))
+        if not todo:
+            self.__dict__[at_key] = now
+            return 0
+        lock = self.__dict__.get("_kb_write_lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            self.__dict__["_kb_write_lock"] = lock
+        async with lock:
+            existing = {}
+            try:
+                for doc in await helper.list_documents(limit=400):
+                    existing[doc.doc_name] = doc
+            except Exception as e:
+                logger.warning(f"[mind] 读「{kb_name}」失败: {e}")
+                return 0
+            done = 0
+            for name, text, digest in todo:
+                full = f"{prefix}{name}"
+                try:
+                    old = existing.get(full)
+                    if old is not None:
+                        await helper.delete_document(old.doc_id)
+                    await helper.upload_document(
+                        file_name=full, file_content=text.encode("utf-8"), file_type="md")
+                    known[name] = digest
+                    done += 1
+                except Exception as e:
+                    logger.warning(f"[mind] 「{full}」入库失败: {e}")
+                    # 向量服务刚起时最容易撞上，3 分钟后重试而不是整轮间隔
+                    self.__dict__[at_key] = now - max(5, gap_minutes) * 60 + 180
+                    return done
+            self.__dict__[at_key] = now
+            return done
+
+    _DOC_SPLIT_BYTES = 7000
+
+    @classmethod
+    def _split_doc(cls, text: str) -> list[str]:
+        """把一篇日记按行切成若干片，每片不超过 _DOC_SPLIT_BYTES 字节。
+
+        起因：2026-10-26 那篇 23 KB 的日记在 AstrBot 的 insert_batch 里必失败
+        （同一目录 7.7 KB 以下的都正常入库），而报错只有一句「文本块已生成，
+        但写入知识库索引时出错」，真因被框架吞掉。与其去改框架，不如传之前先拆。
+        """
+        limit = cls._DOC_SPLIT_BYTES
+        if len(text.encode("utf-8")) <= limit:
+            return [text]
+        lines: list[str] = []
+        for line in text.splitlines(keepends=True):
+            while len(line.encode("utf-8")) > limit:
+                cut = max(1, limit // 3)  # 中文约 3 字节一字，避免切出半个字
+                lines.append(line[:cut])
+                line = line[cut:]
+            if line:
+                lines.append(line)
+        parts: list[str] = []
+        buf: list[str] = []
+        size = 0
+        for line in lines:
+            b = len(line.encode("utf-8"))
+            if buf and size + b > limit:
+                parts.append("".join(buf))
+                buf, size = [], 0
+            buf.append(line)
+            size += b
+        if buf:
+            parts.append("".join(buf))
+        return parts or [text]
+
+    async def _sync_whale(self) -> None:
+        """按内容哈希增量同步世界日记；单写者（只在插件进程里写），失败只记日志。"""
+        if not self.cfg.get("whale_enable", True):
+            return
+        now = time.time()
+        gap = max(5, self._int_cfg("whale_sync_minutes", 30)) * 60
+        if now - float(self.__dict__.get("_whale_at", 0.0)) < gap:
+            return
+        rows = whale_mod.scan(self._whale_dir())
+        if not rows:
+            return
+        mgr = getattr(self.context, "kb_manager", None)
+        if mgr is None:
+            return
+        # 同 _sync_kb_dir：入库前先确保向量服务活着
+        self._ensure_embed()
+        kb_name = str(self.cfg.get("whale_kb") or whale_mod.WHALE_KB)
+        helper = await mgr.get_kb_by_name(kb_name)
+        if helper is None:
+            # 插件可能比 kb_manager 先就绪（load_kbs 在 initialize 之前会炸 kb_db）：
+            # 这一次直接放弃，下一次 tick 再来（_whale_at 只在成功时推进）
+            if getattr(mgr, "kb_db", None) is None:
+                logger.info("[mind] 知识库还没就绪，小鲸鱼的日记下次再同步")
+                return
+            try:
+                await mgr.load_kbs()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[mind] 重新装载知识库失败: {e}")
+            helper = await mgr.get_kb_by_name(kb_name)
+            if helper is None:
+                logger.info(f"[mind] 还是没有「{kb_name}」这个知识库，下次再试")
+        if helper is None:
+            logger.info(f"[mind] 没有「{kb_name}」这个知识库，先不存小鲸鱼的日记")
+            return
+        known = self.__dict__.setdefault("_whale_sha", {})
+        changed = [r for r in rows if known.get(r["date"]) != r["sha"]]
+        if not changed:
+            return
+        lock = self.__dict__.get("_whale_lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            self.__dict__["_whale_lock"] = lock
+        async with lock:
+            existing = {}
+            try:
+                for doc in await helper.list_documents(limit=200):
+                    existing[doc.doc_name] = doc
+            except Exception as e:
+                logger.warning(f"[mind] 读小鲸鱼日记库失败: {e}")
+                return
+            for r in changed:
+                stem = Path(r["name"]).stem
+                parts = self._split_doc(r["text"])
+                try:
+                    # 先清掉这一天的旧分片（含以前传成 2..N 片的）
+                    for old_name in [r["name"]] + [f"{stem}-{i}.md" for i in range(2, 21)]:
+                        old = existing.get(old_name)
+                        if old is not None:
+                            await helper.delete_document(old.doc_id)
+                    for idx, part in enumerate(parts):
+                        name_i = r["name"] if idx == 0 else f"{stem}-{idx + 1}.md"
+                        await helper.upload_document(
+                            file_name=name_i,
+                            file_content=part.encode("utf-8"),
+                            file_type="md",
+                        )
+                    known[r["date"]] = r["sha"]
+                except Exception as e:
+                    logger.warning(f"[mind] 小鲸鱼日记 {r['date']} 同步失败: {e}")
+                    # 失败不要等满一个间隔（多半是向量服务刚起、模型还在加载），3 分钟后再来
+                    self.__dict__["_whale_at"] = now - gap + 180
+                    return
+            self.__dict__["_whale_at"] = now
+            logger.info(f"[mind] 小鲸鱼日记已同步 {len(changed)} 篇 → {kb_name}")
+
     async def _diary_tick(self) -> None:
+        # 鲸鱼日记的同步与写日记无关，先跑（失败不影响下面的日记流程）
+        try:
+            await self._sync_whale()
+        except Exception as e:
+            logger.warning(f"[mind] 小鲸鱼日记同步失败: {e}")
+        try:
+            await self._sync_own_diary()
+        except Exception as e:
+            logger.warning(f"[mind] 日记入库失败: {e}")
         if not self.cfg.get("diary_enable", True):
             return
         if self.__dict__.get("_diary_writing"):
@@ -934,8 +1796,46 @@ class MindEngine(Star):
         self.__dict__["_last_cost"] = cost
         return parse_json_block(getattr(resp, "completion_text", "") or "")
 
+    # ------------------------------------------------------------ 本地向量服务自愈
+    EMBED_PORT = 8765
+    EMBED_SCRIPT = "D:/qqaibot/tools/feiyu_embed_server.py"
+
+    def _ensure_embed(self) -> None:
+        """向量服务是外部进程，崩了她每轮都会在检索上超时报错。这里做个便宜的看门狗。
+
+        节流：探测通了记 4 分钟再看一眼；没通只记 1 分钟，好让「刚开机、服务还没起来」
+        这种情形早点恢复（原来一律 300 秒，机器重启后头 5 分钟全在失败）。
+        """
+        now = time.monotonic()
+        if now - getattr(self, "_embed_checked", 0.0) < 60:
+            return
+        self._embed_checked = now
+        try:
+            with socket.create_connection(("127.0.0.1", self.EMBED_PORT), timeout=0.4):
+                self._embed_checked = now + 240
+                return
+        except OSError:
+            pass
+        script = Path(self.EMBED_SCRIPT)
+        if not script.exists():
+            return
+        exe = Path(sys.executable).with_name("pythonw.exe")
+        if not exe.exists():
+            exe = Path(sys.executable)
+        try:
+            subprocess.Popen(
+                [str(exe), str(script)],
+                creationflags=0x08000000 | 0x00000008,  # CREATE_NO_WINDOW | DETACHED_PROCESS
+                close_fds=True,
+            )
+            logger.info("[mind] 本地向量服务没在跑，已经拉起来了")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[mind] 拉起本地向量服务失败：{e}")
+
     async def _inject(self, event: AstrMessageEvent, req: ProviderRequest, uid: str, msg: str):
         umo = str(getattr(event, "unified_msg_origin", ""))
+        if self.cfg.get("kb_backend", "astrbot") == "astrbot":
+            self._ensure_embed()
         self.mood.decay(
             num_or(self.cfg.get("decay_minutes"), 5.0),
             num_or(self.cfg.get("decay_ratio"), 0.2),
@@ -1113,15 +2013,21 @@ class MindEngine(Star):
         diary_hits: list[dict] = []
         if self.cfg.get("kb_enable", True):
             try:
-                self.kb.reload_if_changed()
-                kb_hits = self.kb.query(msg, k=3)
+                if self.remote_kb is not None:
+                    kb_hits = await self.remote_kb.query(msg, k=3)
+                else:
+                    self.kb.reload_if_changed()
+                    kb_hits = self.kb.query(msg, k=3)
             except Exception as e:
                 logger.warning(f"[mind] 知识检索失败: {e}")
 
         # 她自己的日记：聊到相关话题时会想起来；心情很低时会想起以前开心的那天
         if self.cfg.get("diary_enable", True):
             try:
-                diary_hits = self.kb.query_diary(msg, k=1)
+                if self.remote_kb is not None:
+                    diary_hits = await self.remote_kb.query_diary(msg, k=1)
+                else:
+                    diary_hits = self.kb.query_diary(msg, k=1)
                 if not diary_hits and self.cfg.get("diary_mood_recall", True):
                     pad_now = self.mood.effective(umo)
                     if pad_now.get("P", 60) <= 42:
@@ -1130,6 +2036,14 @@ class MindEngine(Star):
                         diary_hits = self.kb.mood_diary(want_happy=False, k=1)
             except Exception as e:
                 logger.warning(f"[mind] 日记检索失败: {e}")
+
+        # 小鲸鱼的日记：她说过的、看过的，少量提一句（有冷却，别每轮都翻旧账）
+        whale_hits: list[dict] = []
+        if self.cfg.get("whale_enable", True) and self.remote_kb is not None:
+            try:
+                whale_hits = await self._whale_hits(umo, msg)
+            except Exception as e:
+                logger.warning(f"[mind] 小鲸鱼日记检索失败: {e}")
 
         # 跨界面共享的「判断」：只共用看法，不共用经历
         claim_lines: list[str] = []
@@ -1176,6 +2090,7 @@ class MindEngine(Star):
             budget=budget,
             recent=profile.get("recent", []) if scene == "private" else [],
             kb_hits=kb_hits,
+            whale_hits=whale_hits,
             voice_lines=voice_lines,
             diary_hits=diary_hits,
             claims=claim_lines,
@@ -1649,6 +2564,7 @@ class MindEngine(Star):
             yield event.plain_result(chr(10).join(lines))
             return
 
+        if sub in ("toggle", "开关"):
             self.cfg["enable"] = not bool(self.cfg.get("enable", True))
             saved = True
             try:

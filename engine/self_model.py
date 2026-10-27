@@ -783,6 +783,34 @@ class SelfModel:
         self._snapshot(path, rows[-2:])
         _write_jsonl(path, rows)
 
+    def remember_ability(self, claim: str, topic: str = "ability") -> bool:
+        """把「我会做什么」写进她对自己的信念（scope=self），已存在就刷新确认时间。
+
+        和 observe() 分开：能力不是从用户的话里推断出来的，是事实。
+        走 accept 直写，不进 hold 队列——她不该怀疑自己会不会。
+        """
+        claim = (claim or "").strip()
+        if not claim or not self.enabled:
+            return False
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
+        rows = _read_jsonl(self.self_beliefs_path)
+        for r in rows:
+            if r.get("kind") == "capability" and str(r.get("claim") or "").strip() == claim:
+                r["last_confirmed"] = now
+                r["status"] = "accept"
+                r["strength"] = max(float(r.get("strength", 0.7) or 0.7), 0.72)
+                self._rewrite(r, {})
+                return False
+        row = {
+            "id": f"cap-{uuid.uuid4().hex[:6]}",
+            "ts": now, "uid": "", "scene": "", "scope": "self",
+            "kind": "capability", "topic": topic, "claim": claim,
+            "keywords": keywords(claim), "strength": 0.72, "status": "accept",
+            "last_confirmed": now, "evidence": ["这本来就是我自己的本事"],
+        }
+        self._append(row)
+        return True
+
     def _rewrite(self, row: dict, cand: dict) -> None:
         path = self._belief_path(row["scope"])
         rows = _read_jsonl(path)

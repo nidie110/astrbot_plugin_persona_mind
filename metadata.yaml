@@ -1,7 +1,7 @@
 name: astrbot_plugin_persona_mind
 display_name: 人格认知引擎
-desc: 给她一份「当下的人格」：先判断这句话意味着什么，再更新双层 PAD 情绪与关系势场（可信度会随相处真的变化），用八动作 × 七口吻决定怎么回，并带上本地知识、语料与日记；她能分清你是在骂她还是逗她，不接管主模型输出，失败自动降级。
-version: 1.2.3
+desc: 给她一份「当下的人格」：先判断这句话意味着什么，再更新双层 PAD 情绪与关系势场（可信度会随相处真的变化），用八动作 × 七口吻决定怎么回，并带上知识（可挂 AstrBot 自带向量库）、语料与日记；她能分清你是在骂她还是逗她，不接管主模型输出，失败自动降级。
+version: 1.3.7
 author: nidie110
 repo: https://github.com/nidie110/astrbot_plugin_persona_mind
 astrbot_version: ">=4.11.0"

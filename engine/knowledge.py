@@ -144,17 +144,19 @@ class KnowledgeBase:
 
     # ---------- 检索 ----------
 
-    def _score(self, qt: set[tuple], text: str, meta: dict) -> float:
+    def _score(self, qt: set[tuple], text: str, meta: dict, query: str = "") -> float:
         common = qt & tokens(text)
         if not common:
             base = 0.0
         else:
             base = sum(1.0 / max(1, self.df.get(t, 1)) for t in common) / (len(text) ** 0.3)
-        # 标签命中：标签是短词，用「原文包含」判断，比二元组更准
+        # 标签命中：必须命中「查询」本身，不能看 chunk 正文——
+        # 否则带 tags 的日记在任何查询下都白拿加分，把常识全挤出去。
         hits = 0
+        q = query or ""
         for tag in meta.get("tags") or []:
             tag = str(tag).strip()
-            if len(tag) >= 2 and tag in text:
+            if len(tag) >= 2 and tag in q:
                 hits += 1
         if hits:
             base += TAG_HIT_BONUS * hits
@@ -162,7 +164,7 @@ class KnowledgeBase:
             base *= DIARY_PREFER
         return base
 
-    def query(self, text: str, k: int = 3, min_score: float = 0.12) -> list[str]:
+    def query(self, text: str, k: int = 3, min_score: float = 0.05) -> list[str]:
         if not self.chunks:
             return []
         qt = tokens(text)
@@ -170,7 +172,7 @@ class KnowledgeBase:
             return []
         scored = []
         for meta, piece in self.chunks:
-            s = self._score(qt, piece, meta)
+            s = self._score(qt, piece, meta, text)
             if s >= min_score:
                 scored.append((s, meta, piece))
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -187,7 +189,7 @@ class KnowledgeBase:
                 continue
             # 日记检索放宽：query 太短时也允许 tag 命中
             if len(qt) >= 2:
-                s = self._score(qt, piece, meta)
+                s = self._score(qt, piece, meta, text)
             else:
                 s = sum(TAG_HIT_BONUS for t in (meta.get("tags") or []) if len(str(t)) >= 2 and str(t) in text)
             if s >= min_score:
@@ -223,3 +225,146 @@ class KnowledgeBase:
         if path and path not in self.extra_files:
             self.extra_files.append(path)
             self.load()
+
+
+class RemoteKB:
+    """AstrBot 自带知识库做后端（FAISS 稠密 + BM25 稀疏融合）。
+
+    自带库的 chunk 只有 {kb_id, kb_doc_id, chunk_index} 三个元数据，
+    旧版那两条偏好（tag 命中加分、日记 ×1.15）在这里补回来；标签与日期
+    仍从本地 kb/*.md 的 frontmatter 读，只读索引，不写回。
+
+    两个库分开查：常识走 query()，日记走 query_diary()——混在一起时
+    日记的 ×1.15 会把常识挤出前排（实测「曼联」的前两条变成日记）。
+    自带库没有相关性门槛（永远返回非空），所以注入前先用本地打分当闸门：
+    本地对「常识」或「日记」都命中不了，这轮就不注入。
+    自带库整个不可用时（服务没起、维度不对、库被删）直接退回本地。
+    """
+
+    def __init__(self, retrieve, kb_knowledge: str, kb_diary: str,
+                 local: "KnowledgeBase | None" = None, kb_whale: str = "") -> None:
+        self.retrieve = retrieve
+        self.kb_knowledge = kb_knowledge
+        self.kb_diary = kb_diary
+        self.kb_whale = kb_whale
+        self.local = local
+        self._tags: dict[str, list[str]] = {}
+        self._dates: dict[str, str] = {}
+        if local is not None:
+            self._index_local(Path(local.dir))
+
+    # ---------- 本地 side info ----------
+
+    def _index_local(self, directory: Path) -> None:
+        for fp in list(directory.glob("*.md")) + list(directory.glob("*.txt")) + list(directory.glob("*/*.md")):
+            try:
+                meta, _body = parse_front_matter(fp.read_text(encoding="utf-8", errors="ignore"))
+            except Exception:
+                continue
+            self._tags[fp.stem] = [str(t).strip() for t in (meta.get("tags") or []) if str(t).strip()]
+            if meta.get("date"):
+                self._dates[fp.stem] = str(meta["date"])
+
+    def _adjust(self, stem: str, kind: str, score: float, query: str) -> float:
+        hits = sum(1 for t in self._tags.get(stem, []) if len(t) >= 2 and t in query)
+        if hits:
+            score += TAG_HIT_BONUS * hits
+        if kind == "diary":
+            score *= DIARY_PREFER
+        return score
+
+    def _local_best(self, text: str):
+        """本地视角下「常识」「日记」各自的最高分，用来判断该不该注入。"""
+        if self.local is None or not getattr(self.local, "chunks", None):
+            return None
+        qt = tokens(text)
+        if len(qt) < 2:
+            return None
+        best_kb = best_diary = 0.0
+        for meta, piece in self.local.chunks:
+            s = self.local._score(qt, piece, meta, text)
+            if meta.get("kind") == "diary":
+                best_diary = max(best_diary, s)
+            else:
+                best_kb = max(best_kb, s)
+        return best_kb, best_diary
+
+    def _gate(self, text: str, diary: bool = False) -> bool:
+        got = self._local_best(text)
+        if got is None:
+            # 「在吗」「好」这种查不出词的，本地都没信号，就别拿自带库去硬凑
+            return False
+        best_kb, best_diary = got
+        return best_diary >= 0.10 if diary else best_kb >= 0.08
+
+    # ---------- 自带库 ----------
+
+    async def _fetch(self, text: str, kb_name: str, kind: str, limit: int):
+        """返回结果列表；整库不可用时返回 None（交给上层退回本地）。"""
+        if not kb_name:
+            return None
+        try:
+            got = await self.retrieve(
+                text, [kb_name], top_k_fusion=20, top_m_final=max(limit, 5)
+            )
+        except Exception as e:
+            logger.warning(f"[mind] 自带知识库「{kb_name}」不可用: {e}")
+            return None
+        if not isinstance(got, dict) or not got.get("results"):
+            return None
+        rows: list[dict] = []
+        for item in got["results"] or []:
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            doc_name = str(item.get("doc_name") or "")
+            stem = Path(doc_name).stem
+            date = self._dates.get(stem) or (stem if stem[:4].isdigit() else "")
+            rows.append(
+                {
+                    "content": content,
+                    "doc": doc_name,
+                    "kind": kind,
+                    "date": date,
+                    "score": self._adjust(stem, kind, float(item.get("score") or 0.0), text),
+                }
+            )
+        return rows
+
+    async def query(self, text: str, k: int = 3) -> list[str]:
+        if not self._gate(text):
+            return []
+        rows = await self._fetch(text, self.kb_knowledge, "kb", k)
+        if rows is None:
+            return self.local.query(text, k=k) if self.local is not None else []
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        return [r["content"] for r in rows[:k]]
+
+    async def query_whale(self, text: str, k: int = 1) -> list[dict]:
+        """小鲸鱼的日记：相关性靠词面重合兜底（库里没有本地镜像可打分）。"""
+        from . import whale as whale_mod
+
+        if not self.kb_whale:
+            return []
+        rows = await self._fetch(text, self.kb_whale, "whale", max(k, 3))
+        if not rows:
+            return []
+        out: list[dict] = []
+        for r in rows:
+            if not whale_mod.related(text, r["content"]):
+                continue
+            date = whale_mod.date_of(str(r.get("doc") or "")) or str(r.get("date") or "")
+            out.append({"date": date, "text": whale_mod.clip(r["content"], 120),
+                        "score": r["score"]})
+            if len(out) >= k:
+                break
+        return out
+
+    async def query_diary(self, text: str, k: int = 1) -> list[dict]:
+        if not self._gate(text, diary=True):
+            return []
+        rows = await self._fetch(text, self.kb_diary, "diary", k)
+        if rows is None:
+            return self.local.query_diary(text, k=k) if self.local is not None else []
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        return [{"date": r["date"], "title": "", "text": r["content"]} for r in rows[:k]]

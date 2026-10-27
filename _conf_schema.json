@@ -62,6 +62,105 @@
     "description": "启用本地知识库检索（零依赖，无需 embedding）",
     "default": true
   },
+  "kb_backend": {
+    "type": "string",
+    "description": "知识库后端",
+    "hint": "astrbot = 用 AstrBot 自带的知识库（快、要向量服务）；local = 插件自带的字二元组检索（零依赖）",
+    "default": "astrbot",
+    "options": [
+      "astrbot",
+      "local"
+    ],
+    "labels": [
+      "AstrBot 自带",
+      "插件本地"
+    ]
+  },
+  "kb_name_knowledge": {
+    "type": "string",
+    "description": "常识库名字",
+    "hint": "对应 AstrBot 知识库里那个库的名字",
+    "default": "大肥鱼常识"
+  },
+  "kb_name_diary": {
+    "type": "string",
+    "description": "日记库名字",
+    "hint": "她自己的日记放在哪个库里",
+    "default": "大肥鱼日记"
+  },
+  "_sec_whale": {
+    "type": "text",
+    "invisible": true,
+    "description": "=== 小鲸鱼的日记（桌面端那个她） ==="
+  },
+  "whale_enable": {
+    "type": "bool",
+    "default": true,
+    "description": "同步小鲸鱼的日记",
+    "hint": "她在桌面端 dsh-world 里每晚写日记，这里按内容变化增量同步进「小鲸鱼日记」知识库，聊到相关话题时她提一句（会说明是小鲸鱼说的，不冒充自己看过）。"
+  },
+  "whale_dir": {
+    "type": "string",
+    "default": "~/.dsh/worlds/default/diary",
+    "description": "日记目录"
+  },
+  "whale_kb": {
+    "type": "string",
+    "default": "小鲸鱼日记",
+    "description": "存进哪个知识库"
+  },
+  "whale_sync_minutes": {
+    "type": "int",
+    "default": 30,
+    "description": "同步间隔（分钟）",
+    "slider": {
+      "min": 5,
+      "max": 240,
+      "step": 5
+    }
+  },
+  "whale_cooldown_minutes": {
+    "type": "int",
+    "default": 45,
+    "description": "主动提起的冷却（分钟）",
+    "hint": "同一个会话里，两小时内别反复翻她的旧账。",
+    "slider": {
+      "min": 5,
+      "max": 720,
+      "step": 5
+    }
+  },
+  "_sec_split": {
+    "type": "text",
+    "invisible": true,
+    "description": "=== 分条发送 ==="
+  },
+  "split_bubbles": {
+    "type": "bool",
+    "default": true,
+    "description": "把一段回复拆成几条发",
+    "hint": "模型经常把「说 2~3 条」写成一行。开启后这里按句号/逗号替她拆成多个气泡——需要同时打开 AstrBot 的分段回复（platform_settings.segmented_reply）。"
+  },
+  "max_bubbles": {
+    "type": "int",
+    "default": 3,
+    "description": "最多拆几条",
+    "slider": {
+      "min": 1,
+      "max": 6,
+      "step": 1
+    }
+  },
+  "split_min_chars": {
+    "type": "int",
+    "default": 8,
+    "description": "短于这个字数不拆",
+    "slider": {
+      "min": 2,
+      "max": 40,
+      "step": 1
+    }
+  },
   "voice_enable": {
     "type": "bool",
     "description": "启用语料库：按当前意图抽「她平时怎么说」的句子",
@@ -297,5 +396,17 @@
     "default": 30,
     "min": 5,
     "max": 300
+  },
+  "tool_guide_enable": {
+    "type": "bool",
+    "description": "每轮都把完整的「什么时候该动手」拼进提示词",
+    "hint": "人格设定里已经写了精简版（README 第二节那段），开着会重复一遍；只有你不想往人格里写、想全交给插件时才打开",
+    "default": false
+  },
+  "api_spec_enable": {
+    "type": "bool",
+    "description": "按需注入：她这一轮真要动手时，才把对应动作的调用格式给她",
+    "hint": "这是 1.3.6 的核心开关，关掉她就只知道「会什么」、不知道「参数怎么填」，等于不会动手。除非在排错，别关",
+    "default": true
   }
 }
